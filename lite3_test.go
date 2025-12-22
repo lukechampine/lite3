@@ -2,13 +2,24 @@ package lite3
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
-	"math"
 	"testing"
 )
+
+// clean up constants etc.
+// panics -> errors or bools
+// support containers in iter
+//  - remove off from container?
+// JSON
+// jq-style Path(...)
+// growable buffer
+// ditch "generation" system? just don't share memory lol
+// get rid of cast()
+// - separate fields for size and key count
+// combine get and set into upsert
+// rename elite
+// fuzzing/hardening against untrusted buffers
 
 func TestBasic(t *testing.T) {
 	b := New(make([]byte, 0, 1024))
@@ -39,35 +50,34 @@ func TestIter(t *testing.T) {
 	o.SetString("username", "jdoe")
 
 	it := o.Iter()
-	key, typ, val, err := it.Next()
-	if err != nil {
+	e := it.Next()
+	if err := it.Err(); err != nil {
 		t.Fatalf("Iter Next error: %v", err)
-	} else if key != "lap" || typ != TypeInt {
-		t.Errorf("Iter Next = (%q, %v); want (\"lap\", TypeInt)", key, typ)
-	} else if val := binary.LittleEndian.Uint64(val); val != 55 {
+	} else if e.Key != "lap" || e.Value.Type != TypeInt {
+		t.Errorf("Iter Next = (%q, %v); want (\"lap\", TypeInt)", e.Key, e.Value.Type)
+	} else if val := e.Value.Int(); val != 55 {
 		t.Errorf("Iter Next lap value = %d; want 55", val)
 	}
-	key, typ, val, err = it.Next()
-	if err != nil {
+	e = it.Next()
+	if err := it.Err(); err != nil {
 		t.Fatalf("Iter Next error: %v", err)
-	} else if key != "time_sec" || typ != TypeFloat {
-		t.Errorf("Iter Next = (%q, %v); want (\"time_sec\", TypeFloat)", key, typ)
-	} else if val := binary.LittleEndian.Uint64(val); val != math.Float64bits(88.427) {
-		t.Errorf("Iter Next time_sec value = %d; want %d", val, math.Float64bits(88.427))
+	} else if e.Key != "time_sec" || e.Value.Type != TypeFloat {
+		t.Errorf("Iter Next = (%q, %v); want (\"time_sec\", TypeFloat)", e.Key, e.Value.Type)
+	} else if val := e.Value.Float64(); val != 88.427 {
+		t.Errorf("Iter Next time_sec value = %f; want %f", val, 88.427)
 	}
-	key, typ, val, err = it.Next()
-	if err != nil {
+	e = it.Next()
+	if err := it.Err(); err != nil {
 		t.Fatalf("Iter Next error: %v", err)
-	} else if key != "username" || typ != TypeString {
-		t.Errorf("Iter Next = (%q, %v); want (\"username\", TypeString)", key, typ)
-	} else if slen := binary.LittleEndian.Uint32(val); slen != 5 {
-		t.Errorf("Iter Next username length = %d; want 5", slen)
-	} else if string(val[4:][:slen-1]) != "jdoe" {
-		t.Errorf("Iter Next username value = %q; want \"jdoe\"", val[4:][:slen])
+	} else if e.Key != "username" || e.Value.Type != TypeString {
+		t.Errorf("Iter Next = (%q, %v); want (\"username\", TypeString)", e.Key, e.Value.Type)
+	} else if e.Value.String() != "jdoe" {
+		t.Errorf("Iter Next username value = %q; want \"jdoe\"", e.Value.String())
 	}
-	_, _, _, err = it.Next()
-	if err != io.EOF {
-		t.Fatalf("Expected Iter Next to return EOF at end of buffer")
+	if it.Next() != nil {
+		t.Fatalf("Expected Iter Next to return nil at end of buffer")
+	} else if err := it.Err(); err != nil {
+		t.Fatal(err)
 	}
 }
 

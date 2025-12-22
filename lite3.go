@@ -4,7 +4,6 @@ package lite3
 import (
 	"encoding/binary"
 	"errors"
-	"io"
 	"math"
 	"slices"
 	"unsafe"
@@ -71,7 +70,6 @@ func (b *Buffer) setRootContainer(typ uint8) *container {
 	return &container{
 		b:    b,
 		typ:  typ,
-		off:  0,
 		node: n,
 	}
 }
@@ -337,6 +335,30 @@ func (c *container) setArray(key string, keyHash uint32) *Array {
 
 func (c *container) array(key string, keyHash uint32) *Array {
 	return &Array{c.container(key, keyHash, TypeArray)}
+}
+
+func (c *container) iter() *Iter {
+	node := c.node
+	typ := node.Type()
+	if !(typ == TypeObject || typ == TypeArray) {
+		return &Iter{err: errors.New("not an array or object type")}
+	}
+	it := &Iter{
+		b:   c.b,
+		gen: node.gen(),
+	}
+	it.node_offs[0] = uint32(c.off)
+
+	for node.child_offs[0] != 0 { // has children, travel down
+		next_node_offs := node.child_offs[0]
+		node = cast[treeNode](c.b.buf, int(next_node_offs))
+		if it.depth++; it.depth > LITE3_TREE_HEIGHT_MAX {
+			return &Iter{err: errors.New("node walks exceeded LITE3_TREE_HEIGHT_MAX")}
+		}
+		it.node_offs[it.depth] = next_node_offs
+		it.node_i[it.depth] = 0
+	}
+	return it
 }
 
 //////
@@ -636,72 +658,106 @@ func (b *Buffer) get(off int, key string, keyHash uint32) (uint8, int) {
 	panic(errors.New("LITE3_HASH_PROBE_MAX limit reached"))
 }
 
+type Value struct {
+	Type uint8
+	data []byte
+}
+
+func (v Value) Any() any {
+	switch v.Type {
+	case TypeNull:
+		return nil
+	case TypeBool:
+		return v.Bool()
+	case TypeInt:
+		return v.Int()
+	case TypeFloat:
+		return v.Float64()
+	case TypeBytes:
+		return v.Bytes()
+	case TypeString:
+		return v.String()
+	default:
+		panic("unhandled type")
+	}
+}
+
+func (v Value) Bool() bool { return v.data[0] != 0 }
+
+func (v Value) Uint64() uint64   { return binary.LittleEndian.Uint64(v.data) }
+func (v Value) Int() int         { return int(v.Uint64()) }
+func (v Value) Float64() float64 { return math.Float64frombits(v.Uint64()) }
+func (v Value) RawBytes() []byte { return v.data[4:][:binary.LittleEndian.Uint32(v.data[:4])-1] }
+func (v Value) Bytes() []byte    { return slices.Clone(v.RawBytes()) }
+func (v Value) String() string   { return string(v.RawBytes()) }
+
+func (v Value) RawString() string {
+	return unsafe.String(&v.data[4], int(binary.LittleEndian.Uint32(v.data[:4])))
+}
+
+type IterElem struct {
+	Key   string
+	Index int
+	Value Value
+}
+
 type Iter struct {
 	b         *Buffer
 	gen       uint32
 	node_offs [LITE3_TREE_HEIGHT_MAX + 1]uint32
 	depth     int
 	node_i    [LITE3_TREE_HEIGHT_MAX + 1]int
+	err       error
 }
 
-func (c *container) iter() *Iter {
-	node := c.node
-	typ := node.Type()
-	if !(typ == TypeObject || typ == TypeArray) {
-		panic(errors.New("not an array or object type"))
-	}
-	it := &Iter{
-		b:   c.b,
-		gen: node.gen(),
-	}
-	it.node_offs[0] = uint32(c.off)
-
-	for node.child_offs[0] != 0 { // has children, travel down
-		next_node_offs := node.child_offs[0]
-		node = cast[treeNode](c.b.buf, int(next_node_offs))
-		if it.depth++; it.depth > LITE3_TREE_HEIGHT_MAX {
-			panic(errors.New("node walks exceeded LITE3_TREE_HEIGHT_MAX"))
-		}
-		it.node_offs[it.depth] = next_node_offs
-		it.node_i[it.depth] = 0
-	}
-	return it
+func (it *Iter) Err() error {
+	return it.err
 }
 
-func (it *Iter) Next() (key string, typ uint8, val []byte, err error) {
+func (it *Iter) Next() *IterElem {
+	if it.err != nil {
+		return nil
+	}
 	if it.gen != cast[treeNode](it.b.buf, int(it.node_offs[0])).gen() {
-		return "", 0, nil, errors.New("buffer mutated")
+		return nil
 	}
 	node := cast[treeNode](it.b.buf, int(it.node_offs[it.depth]))
 	nodeTyp := node.Type()
 	if !(nodeTyp == TypeObject || nodeTyp == TypeArray) {
-		return "", 0, nil, errors.New("not an array or object type")
+		it.err = errors.New("not an array or object type")
+		return nil
 	}
 	if it.depth == 0 && (it.node_i[it.depth] == node.keyCount()) { // key_count reached, done
-		return "", 0, nil, io.EOF
+		return nil
 	}
 
+	var key string
+	var index int
 	target_offs := int(node.kv_offs[it.node_i[it.depth]])
-
 	if nodeTyp == TypeObject { // write back key if not NULL
 		key_start_offs := target_offs
 		if _, err := _verify_key(it.b.buf, "", 0, &target_offs); err != nil {
-			return "", 0, nil, err
+			it.err = err
+			return nil
 		}
 		key = string(it.b.buf[key_start_offs+1:][:(target_offs - key_start_offs - 2)]) // exclude C string terminator
+	} else {
+		index = int(node.hashes[it.node_i[it.depth]])
 	}
 	val_start_offs := target_offs
 	if _, err := _verify_val(it.b.buf, target_offs); err != nil {
-		return "", 0, nil, err
+		it.err = err
+		return nil
 	}
-	typ, val = it.b.buf[val_start_offs], it.b.buf[val_start_offs+1:]
+	typ, val := it.b.buf[val_start_offs], it.b.buf[val_start_offs+1:]
 	it.node_i[it.depth]++
 
 	for node.child_offs[it.node_i[it.depth]] != 0 { // has children, travel down
 		next_node_offs := node.child_offs[it.node_i[it.depth]]
 		node = cast[treeNode](it.b.buf, int(next_node_offs))
 		if it.depth++; it.depth > LITE3_TREE_HEIGHT_MAX {
-			return "", 0, nil, errors.New("node walks exceeded LITE3_TREE_HEIGHT_MAX")
+			it.err = errors.New("node walks exceeded LITE3_TREE_HEIGHT_MAX")
+			return nil
 		}
 		it.node_offs[it.depth] = next_node_offs
 		it.node_i[it.depth] = 0
@@ -710,5 +766,5 @@ func (it *Iter) Next() (key string, typ uint8, val []byte, err error) {
 		it.depth--
 		node = cast[treeNode](it.b.buf, int(it.node_offs[it.depth]))
 	}
-	return key, typ, val, nil
+	return &IterElem{Key: key, Index: index, Value: Value{Type: typ, data: val}}
 }
