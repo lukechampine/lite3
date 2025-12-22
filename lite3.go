@@ -62,15 +62,10 @@ type Buffer struct {
 }
 
 func (b *Buffer) setRootContainer(typ uint8) *container {
-	if len(b.buf) < LITE3_NODE_SIZE {
-		b.buf = b.buf[:LITE3_NODE_SIZE]
-	}
-	n := cast[treeNode](b.buf, 0)
-	*n = treeNode{gen_type: uint32(typ)}
+	b.buf = appendNode(b.buf[:0], &treeNode{gen_type: uint32(typ)})
 	return &container{
-		b:    b,
-		typ:  typ,
-		node: n,
+		b:   b,
+		typ: typ,
 	}
 }
 
@@ -131,10 +126,26 @@ func (a *Array) Object(i int) *Object          { return a.c.object("", uint32(i)
 func (a *Array) SetArray(i int) *Array         { return a.c.setArray("", uint32(i)) }
 func (a *Array) Array(i int) *Array            { return a.c.array("", uint32(i)) }
 
-////
+func appendNode(buf []byte, node *treeNode) []byte {
+	for _, u := range (*[24]uint32)(unsafe.Pointer(node)) {
+		buf = binary.LittleEndian.AppendUint32(buf, u)
+	}
+	return buf
+}
 
-func cast[T any](buf []byte, off int) *T {
-	return (*T)(unsafe.Pointer(uintptr(unsafe.Pointer(unsafe.SliceData(buf))) + uintptr(off)))
+func writeNode(buf []byte, node *treeNode) {
+	appendNode(buf[:0], node)
+}
+
+func readNode(buf []byte) *treeNode {
+	u32s := (*[24]uint32)(unsafe.Pointer(&buf[0]))
+	return &treeNode{
+		gen_type:   u32s[0],
+		hashes:     [7]uint32(u32s[1:8]),
+		size_kc:    u32s[8],
+		kv_offs:    [7]uint32(u32s[9:16]),
+		child_offs: [8]uint32(u32s[16:24]),
+	}
 }
 
 type treeNode struct {
@@ -190,23 +201,22 @@ func keyHash(key string) uint32 {
 }
 
 type container struct {
-	b    *Buffer
-	typ  uint8
-	off  int // necessary?
-	node *treeNode
+	b   *Buffer
+	typ uint8
+	off int
 }
 
-func (c *container) count() int { return c.node.size() }
+func (c *container) count() int {
+	return readNode(c.b.buf[c.off:]).size()
+}
 
 func (c *container) setContainer(key string, keyHash uint32, typ uint8) *container {
 	off := c.b.set(c.off, key, keyHash, TypeObject, typeSizes[TypeObject])
-	n := cast[treeNode](c.b.buf, off)
-	*n = treeNode{gen_type: uint32(typ)}
+	appendNode(c.b.buf[off:], &treeNode{gen_type: uint32(typ)})
 	return &container{
-		b:    c.b,
-		typ:  typ,
-		off:  off,
-		node: n,
+		b:   c.b,
+		typ: typ,
+		off: off,
 	}
 }
 
@@ -216,10 +226,9 @@ func (c *container) container(key string, keyHash uint32, exp uint8) *container 
 		return nil
 	}
 	return &container{
-		b:    c.b,
-		typ:  typ,
-		off:  off,
-		node: cast[treeNode](c.b.buf, off),
+		b:   c.b,
+		typ: typ,
+		off: off,
 	}
 }
 
@@ -253,7 +262,7 @@ func (c *container) number(key string, keyHash uint32, exp uint8) uint64 {
 	if len(buf) >= 8 {
 		return binary.LittleEndian.Uint64(buf)
 	} else if typ != exp {
-		return 0
+		panic("wrong type")
 	}
 	return 0
 }
@@ -338,7 +347,7 @@ func (c *container) array(key string, keyHash uint32) *Array {
 }
 
 func (c *container) iter() *Iter {
-	node := c.node
+	node := readNode(c.b.buf[c.off:])
 	typ := node.Type()
 	if !(typ == TypeObject || typ == TypeArray) {
 		return &Iter{err: errors.New("not an array or object type")}
@@ -351,7 +360,7 @@ func (c *container) iter() *Iter {
 
 	for node.child_offs[0] != 0 { // has children, travel down
 		next_node_offs := node.child_offs[0]
-		node = cast[treeNode](c.b.buf, int(next_node_offs))
+		node = readNode(c.b.buf[next_node_offs:])
 		if it.depth++; it.depth > LITE3_TREE_HEIGHT_MAX {
 			return &Iter{err: errors.New("node walks exceeded LITE3_TREE_HEIGHT_MAX")}
 		}
@@ -360,8 +369,6 @@ func (c *container) iter() *Iter {
 	}
 	return it
 }
-
-//////
 
 // Verifies a key inside the buffer to ensure readers don't go out of bounds.
 // Optionally, compares the existing key to an input key; a mismatch implies a
@@ -375,7 +382,7 @@ func _verify_key(buf []byte, key string, key_tag_size int, offs *int) (out_key_t
 	if key_tag_size != 0 && key_tag_size != _key_tag_size {
 		return 0, errors.New("key tag size does not match")
 	}
-	_key_size := (*cast[uint32](buf, *offs) & ((1 << 8 * uint32(_key_tag_size)) - 1)) >> LITE3_KEY_TAG_KEY_SIZE_SHIFT
+	_key_size := (binary.LittleEndian.Uint32(buf[*offs:]) & ((1 << 8 * uint32(_key_tag_size)) - 1)) >> LITE3_KEY_TAG_KEY_SIZE_SHIFT
 	*offs += _key_tag_size
 	if len(buf) < int(_key_size)+*offs {
 		return 0, errors.New("key entry out of bounds")
@@ -394,7 +401,7 @@ func _verify_val(buf []byte, off int) (int, error) {
 	if len(buf) < LITE3_VAL_SIZE || off > len(buf)-LITE3_VAL_SIZE {
 		return 0, errors.New("value out of bounds")
 	}
-	typ := *cast[uint8](buf, off)
+	typ := buf[off]
 	if typ == TypeInvalid {
 		return 0, errors.New("value type invalid")
 	}
@@ -404,7 +411,7 @@ func _verify_val(buf []byte, off int) (int, error) {
 		return 0, errors.New("value out of bounds")
 	}
 	if typ == TypeString || typ == TypeBytes { // extra check required for str/bytes
-		byte_count := *cast[uint32](buf, off+LITE3_VAL_SIZE)
+		byte_count := binary.LittleEndian.Uint32(buf[off+LITE3_VAL_SIZE:])
 		_val_entry_size += int(byte_count)
 		if _val_entry_size > len(buf) || off > len(buf)-_val_entry_size {
 			return 0, errors.New("value out of bounds")
@@ -426,8 +433,9 @@ func (b *Buffer) set(off int, key string, keyHash uint32, val_typ uint8, val_len
 	}
 	base_entry_size := key_tag_size + len(key) + LITE3_VAL_SIZE + val_len
 
-	root := cast[treeNode](b.buf, off)
+	root := readNode(b.buf[off:])
 	root.setGen(root.gen() + 1)
+	writeNode(b.buf[off:], root)
 
 	probe_attempts := uint32(1)
 	if key != "" {
@@ -440,7 +448,9 @@ outer:
 
 		entry_size := base_entry_size
 		var parent *treeNode
+		var parentOff int
 		node := root
+		nodeOff := off
 
 		var key_count, i int
 		node_walks := 0
@@ -459,9 +469,10 @@ outer:
 				b.buf = b.buf[:buflen_aligned]
 				if parent == nil {
 					// if root split, create new root
-					*cast[treeNode](b.buf, buflen_aligned) = *node
-					node = cast[treeNode](b.buf, buflen_aligned)
-					parent = cast[treeNode](b.buf, off)
+					nodeOff = buflen_aligned
+					writeNode(b.buf[nodeOff:], node)
+					parentOff = off
+					parent = readNode(b.buf[parentOff:])
 					parent.setKeyCount(0)
 					parent.hashes = [7]uint32{}
 					parent.kv_offs = [7]uint32{}
@@ -479,11 +490,11 @@ outer:
 				parent.kv_offs[i] = node.kv_offs[LITE3_NODE_KEY_COUNT_MIN]
 				parent.child_offs[i+1] = uint32(len(b.buf)) // insert sibling as child in parent
 				parent.setKeyCount(parent.keyCount() + 1)
+				writeNode(b.buf[parentOff:], parent)
 
 				node.hashes[LITE3_NODE_KEY_COUNT_MIN] = 0
 				node.kv_offs[LITE3_NODE_KEY_COUNT_MIN] = 0
-				sibling := cast[treeNode](b.buf, len(b.buf))
-				*sibling = treeNode{
+				sibling := &treeNode{
 					gen_type: uint32(node.Type()),
 					size_kc:  LITE3_NODE_KEY_COUNT_MIN,
 				}
@@ -498,11 +509,17 @@ outer:
 					node.kv_offs[j+LITE3_NODE_KEY_COUNT_MIN+1] = 0
 					node.child_offs[j+LITE3_NODE_KEY_COUNT_MIN+2] = 0
 				}
-				b.buf = b.buf[:len(b.buf)+LITE3_NODE_SIZE]
+				writeNode(b.buf[nodeOff:], node)
+				b.buf = appendNode(b.buf, sibling)
+
 				if attempt_key_hash > parent.hashes[i] { // sibling has target key? then we follow
+					//node = sibling
 					node = sibling
+					nodeOff = len(b.buf) - LITE3_NODE_SIZE
 				} else if attempt_key_hash == parent.hashes[i] {
+					// node = parent
 					node = parent
+					nodeOff = parentOff
 					match = true
 				}
 			}
@@ -532,6 +549,9 @@ outer:
 				}
 				if val_len >= verify-val_start_offs { // value is too large, we must append
 					alignment_mask := 0
+					if val_typ == TypeObject || val_typ == TypeArray {
+						alignment_mask = LITE3_NODE_ALIGNMENT_MASK
+					}
 					unaligned_val_offs := len(b.buf) + key_tag_size + len(key)
 					alignment_padding := ((unaligned_val_offs + alignment_mask) & ^alignment_mask) - unaligned_val_offs
 					entry_size += alignment_padding
@@ -544,18 +564,22 @@ outer:
 					}
 					b.buf = b.buf[:len(b.buf)+alignment_padding]
 					node.kv_offs[i] = uint32(len(b.buf))
+					writeNode(b.buf[nodeOff:], node)
 					break outer
 				}
 				for i := 0; i < target_offs-val_start_offs; i++ {
 					b.buf[val_start_offs+i] = 0
 				}
-				return val_start_offs
+				b.buf[val_start_offs] = val_typ
+				return val_start_offs + 1
 			}
 
 			if node.child_offs[0] != 0 {
 				next_node_offs := int(node.child_offs[i])
-				parent = node
-				node = cast[treeNode](b.buf, next_node_offs)
+				parentOff = nodeOff
+				parent = readNode(b.buf[parentOff:])
+				nodeOff = next_node_offs
+				node = readNode(b.buf[nodeOff:])
 				if node_walks++; node_walks > LITE3_TREE_HEIGHT_MAX {
 					panic(errors.New("node walks exceeded LITE3_TREE_HEIGHT_MAX"))
 				}
@@ -577,8 +601,10 @@ outer:
 				node.setKeyCount(node.keyCount() + 1)
 				b.buf = b.buf[:len(b.buf)+alignment_padding]
 				node.kv_offs[i] = uint32(len(b.buf))
-				root = cast[treeNode](b.buf, off)
+				writeNode(b.buf[nodeOff:], node)
+				root := readNode(b.buf[off:])
 				root.setSize(root.size() + 1)
+				writeNode(b.buf[off:], root)
 				break outer
 			}
 		}
@@ -620,7 +646,7 @@ func (b *Buffer) get(off int, key string, keyHash uint32) (uint8, int) {
 	for attempt := uint32(0); attempt < probe_attempts; attempt++ {
 		attempt_key_hash := keyHash + attempt*attempt
 
-		node := cast[treeNode](b.buf, off)
+		node := readNode(b.buf[off:])
 
 		node_walks := 0
 		for {
@@ -648,7 +674,7 @@ func (b *Buffer) get(off int, key string, keyHash uint32) (uint8, int) {
 				panic(errors.New("key not found: " + key))
 			}
 			next_node_offs := int(node.child_offs[i])
-			node = cast[treeNode](b.buf, next_node_offs)
+			node = readNode(b.buf[next_node_offs:])
 
 			if node_walks++; node_walks > LITE3_TREE_HEIGHT_MAX {
 				panic(errors.New("node walks exceeded LITE3_TREE_HEIGHT_MAX"))
@@ -718,10 +744,10 @@ func (it *Iter) Next() *IterElem {
 	if it.err != nil {
 		return nil
 	}
-	if it.gen != cast[treeNode](it.b.buf, int(it.node_offs[0])).gen() {
+	if it.gen != readNode(it.b.buf[it.node_offs[0]:]).gen() {
 		return nil
 	}
-	node := cast[treeNode](it.b.buf, int(it.node_offs[it.depth]))
+	node := readNode(it.b.buf[it.node_offs[it.depth]:])
 	nodeTyp := node.Type()
 	if !(nodeTyp == TypeObject || nodeTyp == TypeArray) {
 		it.err = errors.New("not an array or object type")
@@ -754,7 +780,7 @@ func (it *Iter) Next() *IterElem {
 
 	for node.child_offs[it.node_i[it.depth]] != 0 { // has children, travel down
 		next_node_offs := node.child_offs[it.node_i[it.depth]]
-		node = cast[treeNode](it.b.buf, int(next_node_offs))
+		node = readNode(it.b.buf[next_node_offs:])
 		if it.depth++; it.depth > LITE3_TREE_HEIGHT_MAX {
 			it.err = errors.New("node walks exceeded LITE3_TREE_HEIGHT_MAX")
 			return nil
@@ -764,7 +790,7 @@ func (it *Iter) Next() *IterElem {
 	}
 	for it.depth > 0 && it.node_i[it.depth] == node.keyCount() {
 		it.depth--
-		node = cast[treeNode](it.b.buf, int(it.node_offs[it.depth]))
+		node = readNode(it.b.buf[it.node_offs[it.depth]:])
 	}
 	return &IterElem{Key: key, Index: index, Value: Value{Type: typ, data: val}}
 }

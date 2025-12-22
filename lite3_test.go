@@ -173,10 +173,11 @@ func TestOverwrite(t *testing.T) {
 	b := New(make([]byte, 0, 1024))
 	o := b.SetRootObject()
 
-	o.SetObject("nested").SetInt("foo", 3)
+	o.SetInt("foo", 3)
+	o.SetInt("foo", 5)
 
-	if foo := o.Object("nested").Int("foo"); foo != 3 {
-		t.Errorf("Nested foo = %d; want 3", foo)
+	if foo := o.Int("foo"); foo != 5 {
+		t.Errorf("foo = %d; want 5", foo)
 	}
 }
 
