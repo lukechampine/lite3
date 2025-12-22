@@ -1,81 +1,65 @@
 package lite3
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"testing"
 )
 
 func TestBasic(t *testing.T) {
-	c := New(make([]byte, 0, 1024))
-	c.SetInt(123)
-	if val := c.Int(); val != 123 {
-		t.Errorf("Int() = %d; want 123", val)
+	b := New(make([]byte, 0, 1024))
+	o := b.SetRootObject()
+	o.SetBool("foo", true)
+
+	if val := o.Bool("foo"); val != true {
+		t.Errorf(`Object.Bool("foo") = %v; want true`, val)
 	}
 
-	c.Reset()
-	c.NewObject()
-	c.Field("foo")
-	c.SetBool(true)
-
-	c.Reset()
-	c.Field("foo")
-	if val := c.Bool(); val != true {
-		t.Errorf(`Field("foo").Bool() = %v; want true`, val)
-	}
-
-	c.Reset()
-	c.NewArray()
-	c.SetString("hello")
-	c.Append()
-	c.SetString("world")
-
-	c.Reset()
-	c.Index(0)
-	if val := c.String(); val != "hello" {
+	a := b.SetRootArray()
+	a.SetString(a.Count(), "hello")
+	a.SetString(a.Count(), "world")
+	if val := a.String(0); val != "hello" {
 		t.Errorf(`Index(0).String() = %q; want "hello"`, val)
 	}
-	c.Index(1)
-	if val := c.String(); val != "world" {
+	if val := a.String(1); val != "world" {
 		t.Errorf(`Index(1).String() = %q; want "world"`, val)
 	}
 }
 
 func TestIter(t *testing.T) {
-	c := New(make([]byte, 0, 1024))
+	b := New(make([]byte, 0, 1024))
 
-	c.NewObject()
-	c.Field("lap")
-	c.SetInt(55)
-	c.Field("time_sec")
-	c.SetFloat64(88.427)
-	c.Field("username")
-	c.SetString("jdoe")
+	o := b.SetRootObject()
+	o.SetInt("lap", 55)
+	o.SetFloat64("time_sec", 88.427)
+	o.SetString("username", "jdoe")
 
-	it := c.Iter()
+	it := o.Iter()
 	key, typ, val, err := it.Next()
 	if err != nil {
 		t.Fatalf("Iter Next error: %v", err)
-	} else if key != "lap" || typ != LITE3_TYPE_I64 {
-		t.Errorf("Iter Next = (%q, %v); want (\"lap\", LITE3_TYPE_I64)", key, typ)
+	} else if key != "lap" || typ != TypeInt {
+		t.Errorf("Iter Next = (%q, %v); want (\"lap\", TypeInt)", key, typ)
 	} else if val := binary.LittleEndian.Uint64(val); val != 55 {
 		t.Errorf("Iter Next lap value = %d; want 55", val)
 	}
 	key, typ, val, err = it.Next()
 	if err != nil {
 		t.Fatalf("Iter Next error: %v", err)
-	} else if key != "time_sec" || typ != LITE3_TYPE_F64 {
-		t.Errorf("Iter Next = (%q, %v); want (\"time_sec\", LITE3_TYPE_F64)", key, typ)
+	} else if key != "time_sec" || typ != TypeFloat {
+		t.Errorf("Iter Next = (%q, %v); want (\"time_sec\", TypeFloat)", key, typ)
 	} else if val := binary.LittleEndian.Uint64(val); val != math.Float64bits(88.427) {
 		t.Errorf("Iter Next time_sec value = %d; want %d", val, math.Float64bits(88.427))
 	}
 	key, typ, val, err = it.Next()
 	if err != nil {
 		t.Fatalf("Iter Next error: %v", err)
-	} else if key != "username" || typ != LITE3_TYPE_STRING {
-		t.Errorf("Iter Next = (%q, %v); want (\"username\", LITE3_TYPE_STRING)", key, typ)
+	} else if key != "username" || typ != TypeString {
+		t.Errorf("Iter Next = (%q, %v); want (\"username\", TypeString)", key, typ)
 	} else if slen := binary.LittleEndian.Uint32(val); slen != 5 {
 		t.Errorf("Iter Next username length = %d; want 5", slen)
 	} else if string(val[4:][:slen-1]) != "jdoe" {
@@ -89,92 +73,68 @@ func TestIter(t *testing.T) {
 
 func TestJSON(t *testing.T) {
 	t.SkipNow()
-	c := New(make([]byte, 0, 1024))
+	b := New(make([]byte, 0, 1024))
 
-	c.NewObject()
-	c.Field("event")
-	c.SetString("lap_complete")
-	c.Field("lap")
-	c.SetInt(55)
-	c.Field("time_sec")
-	c.SetFloat64(88.427)
+	o := b.SetRootObject()
+	o.SetString("event", "lap_complete")
+	o.SetInt("lap", 55)
+	o.SetFloat64("time_sec", 88.427)
 
-	js, _ := json.Marshal(c)
+	js, _ := json.Marshal(o)
 	if string(js) != `{"event":"lap_complete","lap":55,"time_sec":88.427}` {
 		t.Errorf("Unexpected JSON: %s", js)
 	}
 
-	c.Field("lap")
-	c.SetInt(56)
-	js, _ = json.Marshal(c)
+	o.SetInt("lap", 56)
+	js, _ = json.Marshal(o)
 	if string(js) != `{"event":"lap_complete","lap":56,"time_sec":88.427}` {
 		t.Errorf("Unexpected JSON: %s", js)
 	}
 }
 
 func TestJohnDoe(t *testing.T) {
-	c := New(make([]byte, 0, 2048))
-	c.NewObject()
+	b := New(make([]byte, 0, 2048))
+	o := b.SetRootObject()
 
-	c.Field("user_id")
-	c.SetInt(12345)
-	c.Field("username")
-	c.SetString("jdoe")
-	c.Field("email_address")
-	c.SetString("jdoe@example.com")
-	c.Field("is_active")
-	c.SetBool(true)
-	c.Field("account_balance")
-	c.SetFloat64(259.75)
-	c.Field("signup_date_str")
-	c.SetString("2023-08-15")
-	c.Field("last_login_date_iso")
-	c.SetString("2025-09-13T13:20:00Z")
-	c.Field("birth_year")
-	c.SetInt(1996)
-	c.Field("phone_number")
-	c.SetString("+14155555671")
-	c.Field("preferred_language")
-	c.SetString("en")
-	c.Field("time_zone")
-	c.SetString("Europe/Berlin")
-	c.Field("loyalty_points")
-	c.SetInt(845)
-	c.Field("avg_session_length_minutes")
-	c.SetFloat64(14.3)
-	c.Field("newsletter_subscribed")
-	c.SetBool(false)
-	c.Field("ip_address")
-	c.SetString("192.168.0.42")
-	c.Field("notes")
-	c.SetNull()
+	o.SetInt("user_id", 12345)
+	o.SetString("username", "jdoe")
+	o.SetString("email_address", "jdoe@example.com")
+	o.SetBool("is_active", true)
+	o.SetFloat64("account_balance", 259.75)
+	o.SetString("signup_date_str", "2023-08-15")
+	o.SetString("last_login_date_iso", "2025-09-13T13:20:00Z")
+	o.SetInt("birth_year", 1996)
+	o.SetString("phone_number", "+14155555671")
+	o.SetString("preferred_language", "en")
+	o.SetString("time_zone", "Europe/Berlin")
+	o.SetInt("loyalty_points", 845)
+	o.SetFloat64("avg_session_length_minutes", 14.3)
+	o.SetBool("newsletter_subscribed", false)
+	o.SetString("ip_address", "192.168.0.42")
+	o.SetNull("notes")
 
-	if c.Count() != 16 {
-		t.Errorf("Object Count() = %d; want 16", c.Count())
+	if o.Count() != 16 {
+		t.Errorf("Object Count() = %d; want 16", o.Count())
 	}
 
 	checkInt := func(key string, expected int) {
-		c.Field(key)
-		if val := c.Int(); val != expected {
-			t.Errorf("Field(%q).Int() = %d; want %d", key, val, expected)
+		if val := o.Int(key); val != expected {
+			t.Errorf("Int(%q) = %d; want %d", key, val, expected)
 		}
 	}
 	checkString := func(key, expected string) {
-		c.Field(key)
-		if val := c.String(); val != expected {
-			t.Errorf("Field(%q).String() = %q; want %q", key, val, expected)
+		if val := o.String(key); val != expected {
+			t.Errorf("String(%q) = %q; want %q", key, val, expected)
 		}
 	}
 	checkBool := func(key string, expected bool) {
-		c.Field(key)
-		if val := c.Bool(); val != expected {
-			t.Errorf("Field(%q).Bool() = %v; want %v", key, val, expected)
+		if val := o.Bool(key); val != expected {
+			t.Errorf("Bool(%q) = %v; want %v", key, val, expected)
 		}
 	}
 	checkFloat64 := func(key string, expected float64) {
-		c.Field(key)
-		if val := c.Float64(); val != expected {
-			t.Errorf("Field(%q).Float64() = %f; want %f", key, val, expected)
+		if val := o.Float64(key); val != expected {
+			t.Errorf("Float64(%q) = %f; want %f", key, val, expected)
 		}
 	}
 
@@ -193,21 +153,30 @@ func TestJohnDoe(t *testing.T) {
 	checkFloat64("avg_session_length_minutes", 14.3)
 	checkBool("newsletter_subscribed", false)
 	checkString("ip_address", "192.168.0.42")
+
+	if fmt.Sprintf("%x", sha256.Sum256(b.Bytes())) != "500b128608cde5dd08b0ec22eb922375441a93f6aad902aaf6c394b77088b4db" {
+		t.Errorf("Buffer contents do not match reference implementation")
+	}
+}
+
+func TestOverwrite(t *testing.T) {
+	b := New(make([]byte, 0, 1024))
+	o := b.SetRootObject()
+
+	o.SetObject("nested").SetInt("foo", 3)
+
+	if foo := o.Object("nested").Int("foo"); foo != 3 {
+		t.Errorf("Nested foo = %d; want 3", foo)
+	}
 }
 
 func TestNesting(t *testing.T) {
-	c := New(make([]byte, 0, 1024))
+	b := New(make([]byte, 0, 1024))
 
-	c.NewObject()
-	c.Field("nested")
-	c.NewObject()
-	c.Field("foo")
-	c.SetInt(3)
+	o := b.SetRootObject()
+	o.SetObject("nested").SetInt("foo", 3)
 
-	c.Reset()
-	c.Field("nested")
-	c.Field("foo")
-	if foo := c.Int(); foo != 3 {
+	if foo := o.Object("nested").Int("foo"); foo != 3 {
 		t.Errorf("Nested foo = %d; want 3", foo)
 	}
 }
