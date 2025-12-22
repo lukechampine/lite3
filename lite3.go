@@ -49,23 +49,23 @@ var typeSizes = [...]int{
 	TypeFloat:   8,
 	TypeBytes:   4,
 	TypeString:  4,
-	TypeObject:  nodeSize - 1, // type byte hidden inside treeNode.gen_type
+	TypeObject:  nodeSize - 1, // type byte hidden inside treeNode.genType
 	TypeArray:   nodeSize - 1,
 	TypeInvalid: 0,
 }
-
-var errCollision = errors.New("hash collision")
 
 type Buffer struct {
 	buf []byte
 }
 
 func (b *Buffer) setRootContainer(typ uint8) container {
-	b.buf = appendNode(b.buf[:0], &treeNode{gen_type: uint32(typ)})
+	buf := make([]byte, nodeSize)
+	buf[0] = typ
+	b.buf = append(b.buf[:0], buf...)
 	return container{
 		b:   b,
 		typ: typ,
-		ptr: nodeptr{b, 0},
+		off: 0,
 	}
 }
 
@@ -126,114 +126,51 @@ func (a Array) Object(i int) Object           { return a.c.object("", uint32(i))
 func (a Array) SetArray(i int) Array          { return a.c.setArray("", uint32(i)) }
 func (a Array) Array(i int) Array             { return a.c.array("", uint32(i)) }
 
-func appendNode(buf []byte, node *treeNode) []byte {
-	for _, u := range (*[24]uint32)(unsafe.Pointer(node)) {
+type treeNode struct {
+	off      uint32
+	typ      uint8
+	gen      uint32
+	hashes   [7]uint32
+	keyCount uint8
+	size     uint32
+	kvOff    [7]uint32
+	childOff [8]uint32
+}
+
+func (b *Buffer) treeNode(off uint32) treeNode {
+	u32s := (*[24]uint32)(unsafe.Pointer(&b.buf[off]))
+	return treeNode{
+		off:      off,
+		typ:      uint8(u32s[0]),
+		gen:      u32s[0] >> 8,
+		hashes:   [7]uint32(u32s[1:8]),
+		keyCount: uint8(u32s[8] & 7),
+		size:     u32s[8] >> 6,
+		kvOff:    [7]uint32(u32s[9:16]),
+		childOff: [8]uint32(u32s[16:24]),
+	}
+}
+
+func (node *treeNode) hasChildren() bool {
+	return node.childOff[0] != 0
+}
+
+func (node *treeNode) flush(b *Buffer) {
+	genType := (uint32(node.typ) & 0xFF) | (node.gen << 8)
+	sizeKC := (node.size << 6) | (uint32(node.keyCount) & 7)
+
+	buf := b.buf[:node.off]
+	buf = binary.LittleEndian.AppendUint32(buf, genType)
+	for _, u := range &node.hashes {
 		buf = binary.LittleEndian.AppendUint32(buf, u)
 	}
-	return buf
-}
-
-func writeNode(buf []byte, node *treeNode) {
-	appendNode(buf[:0], node)
-}
-
-func readNode(buf []byte) treeNode {
-	u32s := (*[24]uint32)(unsafe.Pointer(&buf[0]))
-	return treeNode{
-		gen_type:   u32s[0],
-		hashes:     [7]uint32(u32s[1:8]),
-		size_kc:    u32s[8],
-		kv_offs:    [7]uint32(u32s[9:16]),
-		child_offs: [8]uint32(u32s[16:24]),
+	buf = binary.LittleEndian.AppendUint32(buf, sizeKC)
+	for _, u := range &node.kvOff {
+		buf = binary.LittleEndian.AppendUint32(buf, u)
 	}
-}
-
-type nodeptr struct {
-	b   *Buffer
-	off uint32
-}
-
-func (np nodeptr) clear() {
-	for i := range uint32(nodeSize) {
-		np.b.buf[np.off+i] = 0
+	for _, u := range &node.childOff {
+		buf = binary.LittleEndian.AppendUint32(buf, u)
 	}
-}
-
-func (np nodeptr) get32(i uint32) uint32 {
-	return binary.LittleEndian.Uint32(np.b.buf[np.off+i*4:])
-}
-
-func (np nodeptr) put32(i uint32, v uint32) {
-	binary.LittleEndian.PutUint32(np.b.buf[np.off+i*4:], v)
-}
-
-func (np nodeptr) gen() uint32 {
-	return np.get32(0) >> 8
-}
-
-func (np nodeptr) setGen(gen uint32) {
-	genType := np.get32(0)
-	genType &= (1 << 8) - 1
-	genType |= gen << 8
-	np.put32(0, genType)
-}
-
-func (np nodeptr) hash(i int) uint32  { return np.get32(uint32(1 + i)) }
-func (np nodeptr) kv(i int) uint32    { return np.get32(uint32(9 + i)) }
-func (np nodeptr) child(i int) uint32 { return np.get32(uint32(16 + i)) }
-
-func (np nodeptr) setHash(i int, v uint32)  { np.put32(uint32(1+i), v) }
-func (np nodeptr) setKV(i int, v uint32)    { np.put32(uint32(9+i), v) }
-func (np nodeptr) setChild(i int, v uint32) { np.put32(uint32(16+i), v) }
-
-func (np nodeptr) Type() uint8       { return np.b.buf[np.off] }
-func (np nodeptr) setType(typ uint8) { np.b.buf[np.off] = typ }
-
-func (np nodeptr) size() int { return int(np.get32(8) >> 6) }
-
-func (np nodeptr) setSize(size int) {
-	sizeKC := np.get32(8)
-	sizeKC &= (1 << 6) - 1
-	sizeKC |= uint32(size) << 6
-	np.put32(8, sizeKC)
-}
-
-func (np nodeptr) keyCount() int {
-	return int(np.b.buf[np.off+32] & 7)
-}
-
-func (np nodeptr) setKeyCount(kc int) {
-	np.b.buf[np.off+32] &^= 7
-	np.b.buf[np.off+32] |= uint8(kc) & 7
-}
-
-func (np nodeptr) read() treeNode {
-	return readNode(np.b.buf[np.off:])
-}
-
-func (nptr nodeptr) write(node *treeNode) {
-	writeNode(nptr.b.buf[nptr.off:], node)
-}
-
-type treeNode struct {
-	gen_type   uint32
-	hashes     [7]uint32
-	size_kc    uint32
-	kv_offs    [7]uint32
-	child_offs [8]uint32
-}
-
-func (node *treeNode) Type() uint8 {
-	return uint8(node.gen_type)
-}
-
-func (node *treeNode) keyCount() int {
-	return int(node.size_kc & 7)
-}
-
-func (node *treeNode) setKeyCount(kc int) {
-	node.size_kc &^= 7
-	node.size_kc |= uint32(kc) & 7
 }
 
 func keyHash(key string) uint32 {
@@ -245,77 +182,68 @@ func keyHash(key string) uint32 {
 	return hash
 }
 
+func unsafeString(b []byte) string { return unsafe.String(unsafe.SliceData(b), len(b)) }
+func unsafeSlice(s string) []byte  { return unsafe.Slice(unsafe.StringData(s), len(s)) }
+
 type container struct {
 	b   *Buffer
 	typ uint8
-	ptr nodeptr
+	off uint32
 }
 
-func (c *container) count() int {
-	return c.ptr.size()
-}
+func (c *container) count() int  { return int(c.b.treeNode(c.off).size) }
+func (c *container) iter() *Iter { return newIter(c.b, c.b.treeNode(c.off)) }
 
 func (c *container) setContainer(key string, keyHash uint32, typ uint8) container {
-	off := c.b.set(c.ptr, key, keyHash, TypeObject, typeSizes[TypeObject])
-	np := nodeptr{c.b, uint32(off)}
-	np.clear()
-	np.setType(typ)
 	return container{
 		b:   c.b,
 		typ: typ,
-		ptr: nodeptr{c.b, uint32(off)},
+		off: c.b.set(c.b.treeNode(c.off), key, keyHash, TypeObject, make([]byte, nodeSize-1)),
 	}
 }
 
 func (c *container) container(key string, keyHash uint32, exp uint8) container {
-	typ, off := c.b.get(c.ptr, key, keyHash)
-	if typ != exp {
-		panic("wrong container type")
+	kv := c.b.get(c.b.treeNode(c.off), key, keyHash)
+	if *kv.typ != exp {
+		panic("type mismatch")
 	}
 	return container{
 		b:   c.b,
-		typ: typ,
-		ptr: nodeptr{c.b, uint32(off)},
+		typ: *kv.typ,
+		off: kv.typOff,
 	}
 }
 
 func (c *container) setNull(key string, keyHash uint32) {
-	c.b.set(c.ptr, key, keyHash, TypeNull, 0)
+	c.b.set(c.b.treeNode(c.off), key, keyHash, TypeNull, nil)
 }
 
 func (c *container) setBool(key string, keyHash uint32, val bool) {
-	off := c.b.set(c.ptr, key, keyHash, TypeBool, 1)
+	var v byte
 	if val {
-		c.b.buf[off] = 1
-	} else {
-		c.b.buf[off] = 0
+		v = 1
 	}
+	c.b.set(c.b.treeNode(c.off), key, keyHash, TypeBool, []byte{v})
 }
 
 func (c *container) bool(key string, keyHash uint32) bool {
-	typ, off := c.b.get(c.ptr, key, keyHash)
-	buf := c.b.buf[off:]
-	return typ == TypeBool && len(buf) > 0 && buf[0] != 0
+	kv := c.b.get(c.b.treeNode(c.off), key, keyHash)
+	return kv.val[0] != 0
 }
 
-func (c *container) setUint64(key string, keyHash uint32, typ uint8, val uint64) {
-	buf := c.b.buf[c.b.set(c.ptr, key, keyHash, typ, 8):]
-	binary.LittleEndian.PutUint64(buf, val)
+func (c *container) setNumber(key string, keyHash uint32, typ uint8, val uint64) {
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], val)
+	c.b.set(c.b.treeNode(c.off), key, keyHash, typ, buf[:])
 }
 
 func (c *container) number(key string, keyHash uint32, exp uint8) uint64 {
-	typ, off := c.b.get(c.ptr, key, keyHash)
-	buf := c.b.buf[off:]
-	if len(buf) >= 8 {
-		return binary.LittleEndian.Uint64(buf)
-	} else if typ != exp {
-		panic("wrong type")
-	}
-	return 0
+	kv := c.b.get(c.b.treeNode(c.off), key, keyHash)
+	return binary.LittleEndian.Uint64(kv.val)
 }
 
 func (c *container) setInt(key string, keyHash uint32, val int) {
-	c.setUint64(key, keyHash, TypeInt, uint64(val))
+	c.setNumber(key, keyHash, TypeInt, uint64(val))
 }
 
 func (c *container) int(key string, keyHash uint32) int {
@@ -323,7 +251,7 @@ func (c *container) int(key string, keyHash uint32) int {
 }
 
 func (c *container) setFloat64(key string, keyHash uint32, val float64) {
-	c.setUint64(key, keyHash, TypeFloat, math.Float64bits(val))
+	c.setNumber(key, keyHash, TypeFloat, math.Float64bits(val))
 }
 
 func (c *container) float64(key string, keyHash uint32) float64 {
@@ -331,25 +259,12 @@ func (c *container) float64(key string, keyHash uint32) float64 {
 }
 
 func (c *container) setTypedBytes(key string, keyHash uint32, typ uint8, val []byte) {
-	buf := c.b.buf[c.b.set(c.ptr, key, keyHash, typ, 4+len(val)+1):]
-	binary.LittleEndian.PutUint32(buf, uint32(len(val)+1))
-	copy(buf[4:], val)
-	buf[4+len(val)] = 0 // C string terminator
+	c.b.set(c.b.treeNode(c.off), key, keyHash, typ, val)
 }
 
 func (c *container) typedBytes(key string, keyHash uint32, exp uint8) []byte {
-	typ, off := c.b.get(c.ptr, key, keyHash)
-	buf := c.b.buf[off:]
-	if len(buf) < 4 {
-		return nil
-	} else if typ != exp {
-		return nil
-	}
-	strlen := binary.LittleEndian.Uint32(buf[:4]) - 1 // C string terminator
-	if len(buf[4:]) < int(strlen) {
-		return nil
-	}
-	return buf[4:][:strlen]
+	kv := c.b.get(c.b.treeNode(c.off), key, keyHash)
+	return kv.val
 }
 
 func (c *container) setBytes(key string, keyHash uint32, val []byte) {
@@ -365,7 +280,7 @@ func (c *container) rawBytes(key string, keyHash uint32) []byte {
 }
 
 func (c *container) setString(key string, keyHash uint32, val string) {
-	c.setTypedBytes(key, keyHash, TypeString, unsafe.Slice(unsafe.StringData(val), len(val)))
+	c.setTypedBytes(key, keyHash, TypeString, unsafeSlice(val))
 }
 
 func (c *container) string(key string, keyHash uint32) string {
@@ -373,8 +288,7 @@ func (c *container) string(key string, keyHash uint32) string {
 }
 
 func (c *container) rawString(key string, keyHash uint32) string {
-	b := c.typedBytes(key, keyHash, TypeString)
-	return unsafe.String(&b[0], len(b))
+	return unsafeString(c.typedBytes(key, keyHash, TypeString))
 }
 
 func (c *container) setObject(key string, keyHash uint32) Object {
@@ -393,316 +307,308 @@ func (c *container) array(key string, keyHash uint32) Array {
 	return Array{c.container(key, keyHash, TypeArray)}
 }
 
-func (c *container) iter() *Iter {
-	node := c.ptr
-	it := &Iter{
-		b:   c.b,
-		gen: node.gen(),
+func appendVal(buf []byte, valType uint8, val []byte) []byte {
+	buf = append(buf, valType)
+	if valType == TypeString || valType == TypeBytes {
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(val)+1))
+		buf = append(buf, val...)
+		buf = append(buf, 0) // C string terminator
+		return buf
 	}
-	it.node_offs[0] = uint32(c.ptr.off)
-
-	for node.child(0) != 0 { // has children, travel down
-		node.off = node.child(0)
-		if it.depth++; it.depth > maxDepth {
-			return &Iter{err: errors.New("node walks exceeded maxDepth")}
-		}
-		it.node_offs[it.depth] = node.off
-		it.node_i[it.depth] = 0
-	}
-	return it
+	return append(buf, val...)
 }
 
-// Verifies a key inside the buffer to ensure readers don't go out of bounds.
-// Optionally, compares the existing key to an input key; a mismatch implies a
-// hash collision.
-func _verify_key(buf []byte, key string, key_tag_size int, offs *int) (out_key_tag_size int, err error) {
-	const maxTagSize = 4
-	if len(buf) < maxTagSize {
-		return 0, errors.New("key entry out of bounds")
-	}
-	_key_tag_size := int((buf[*offs] & (maxTagSize - 1)) + 1)
-	if key_tag_size != 0 && key_tag_size != _key_tag_size {
-		return 0, errors.New("key tag size does not match")
-	}
-	_key_size := (binary.LittleEndian.Uint32(buf[*offs:]) & ((1 << 8 * uint32(_key_tag_size)) - 1)) >> 2
-	*offs += _key_tag_size
-	if len(buf) < int(_key_size)+*offs {
-		return 0, errors.New("key entry out of bounds")
-	}
-	if key != "" && key != string(buf[*offs:][:_key_size-1]) {
-		return 0, errCollision
-	}
-	*offs += int(_key_size)
-	if out_key_tag_size != 0 {
-		out_key_tag_size = _key_tag_size
-	}
-	return out_key_tag_size, nil
-}
-
-func _verify_val(buf []byte, off int) (int, error) {
-	if len(buf) < 1 || off > len(buf)-1 {
-		return 0, errors.New("value out of bounds")
-	}
-	typ := buf[off]
-	if typ == TypeInvalid {
-		return 0, errors.New("value type invalid")
-	}
-	_val_entry_size := 1 + typeSizes[typ]
-
-	if _val_entry_size > len(buf) || off > len(buf)-_val_entry_size {
-		return 0, errors.New("value out of bounds")
-	}
-	if typ == TypeString || typ == TypeBytes { // extra check required for str/bytes
-		byte_count := binary.LittleEndian.Uint32(buf[off+1:])
-		_val_entry_size += int(byte_count)
-		if _val_entry_size > len(buf) || off > len(buf)-_val_entry_size {
-			return 0, errors.New("value out of bounds")
-		}
-	}
-	return off + _val_entry_size, nil
-}
-
-func (b *Buffer) set(root nodeptr, key string, keyHash uint32, val_typ uint8, val_len int) int {
-	key_tag_size := keyTagSize(key)
-	base_entry_size := key_tag_size + len(key) + 1 + val_len
-
-	root.setGen(root.gen() + 1)
-
-	probe_attempts := uint32(1)
+// appendEntry appends a fresh key/value payload to b.buf and returns the
+// offset of the type byte. The caller is responsible for storing the kv offset.
+func (b *Buffer) appendEntry(key string, valType uint8, val []byte) (uint32, bool) {
 	if key != "" {
-		probe_attempts = maxProbes
-	}
-
-outer:
-	for attempt := uint32(0); ; attempt++ {
-		attempt_key_hash := keyHash + attempt*attempt
-
-		entry_size := base_entry_size
-		var parent treeNode
-		var parentptr nodeptr
-		parentptr.b = b
-		node := root.read()
-		nptr := root
-
-		var key_count, i int
-		node_walks := 0
-		for {
-			match := false
-			if nptr.keyCount() == maxKeyCount { // node full, need to split
-				buflen_aligned := (len(b.buf) + 3) & ^3 // next multiple of 4
-				new_node_size := nodeSize
-				if parent.gen_type != 0 {
-					new_node_size = 2 * nodeSize
-				}
-				if len(b.buf)+new_node_size+buflen_aligned > cap(b.buf) {
-					// grow buffer
-					b.buf = append(b.buf, make([]byte, new_node_size+buflen_aligned)...)
-				}
-				b.buf = b.buf[:buflen_aligned]
-				if parent.gen_type == 0 {
-					// if root split, create new root
-					nptr.off = uint32(len(b.buf))
-					parentptr = root
-					parent = parentptr.read()
-					parent.setKeyCount(0)
-					parent.hashes = [7]uint32{}
-					parent.kv_offs = [7]uint32{}
-					parent.child_offs = [8]uint32{0: uint32(len(b.buf))}
-					b.buf = b.buf[:len(b.buf)+nodeSize]
-					key_count = 0
-					i = 0
-				}
-				for j := key_count; j > i; j-- { // shift parent array before separator insert
-					parent.hashes[j] = parent.hashes[j-1]
-					parent.kv_offs[j] = parent.kv_offs[j-1]
-					parent.child_offs[j+1] = parent.child_offs[j]
-				}
-				parent.hashes[i] = node.hashes[minKeyCount] // insert new separator key in parent
-				parent.kv_offs[i] = node.kv_offs[minKeyCount]
-				parent.child_offs[i+1] = uint32(len(b.buf)) // insert sibling as child in parent
-				parent.setKeyCount(parent.keyCount() + 1)
-				parentptr.write(&parent)
-
-				node.hashes[minKeyCount] = 0
-				node.kv_offs[minKeyCount] = 0
-				sibling := treeNode{
-					gen_type: uint32(node.Type()),
-					size_kc:  minKeyCount,
-				}
-				node.size_kc = minKeyCount
-				sibling.child_offs[0] = node.child_offs[minKeyCount+1] // take child from node
-				node.child_offs[minKeyCount+1] = 0
-				for j := range minKeyCount { // copy half of node's keys to sibling
-					sibling.hashes[j] = node.hashes[j+minKeyCount+1]
-					sibling.kv_offs[j] = node.kv_offs[j+minKeyCount+1]
-					sibling.child_offs[j+1] = node.child_offs[j+minKeyCount+2]
-					node.hashes[j+minKeyCount+1] = 0
-					node.kv_offs[j+minKeyCount+1] = 0
-					node.child_offs[j+minKeyCount+2] = 0
-				}
-				nptr.write(&node)
-				b.buf = appendNode(b.buf, &sibling)
-
-				if attempt_key_hash > parent.hashes[i] { // sibling has target key? then we follow
-					//node = sibling
-					node = sibling
-					nptr.off = uint32(len(b.buf) - nodeSize)
-				} else if attempt_key_hash == parent.hashes[i] {
-					// node = parent
-					node = parent
-					nptr.off = parentptr.off
-					match = true
-				}
-			}
-
-			if !match {
-				key_count = nptr.keyCount()
-				i = 0
-				for i < key_count && node.hashes[i] < attempt_key_hash {
-					i++
-				}
-				match = i < key_count && node.hashes[i] == attempt_key_hash
-			}
-			if match {
-				target_offs := int(node.kv_offs[i])
-				key_start_offs := target_offs
-				if key != "" {
-					if _, err := _verify_key(b.buf, key, key_tag_size, &target_offs); err == errCollision {
-						break // try next probe
-					} else if err != nil {
-						panic(err)
-					}
-				}
-				val_start_offs := target_offs
-				verify, err := _verify_val(b.buf, target_offs)
-				if err != nil {
-					panic(err)
-				}
-				if val_len >= verify-val_start_offs { // value is too large, we must append
-					alignment_mask := 0
-					if val_typ == TypeObject || val_typ == TypeArray {
-						alignment_mask = 3
-					}
-					unaligned_val_offs := len(b.buf) + key_tag_size + len(key)
-					alignment_padding := ((unaligned_val_offs + alignment_mask) & ^alignment_mask) - unaligned_val_offs
-					entry_size += alignment_padding
-					for j := 0; j < target_offs-key_start_offs; j++ {
-						b.buf[int(node.kv_offs[i])+j] = 0
-					}
-					b.buf = b.buf[:len(b.buf)+alignment_padding]
-					node.kv_offs[i] = uint32(len(b.buf))
-					nptr.write(&node)
-					break outer
-				}
-				for i := 0; i < target_offs-val_start_offs; i++ {
-					b.buf[val_start_offs+i] = 0
-				}
-
-				if val_typ == TypeObject || val_typ == TypeArray {
-					return val_start_offs
-				}
-				b.buf[val_start_offs] = val_typ
-				return val_start_offs + 1
-			}
-
-			if node.child_offs[0] != 0 {
-				parentptr.off = uint32(nptr.off)
-				parent = parentptr.read()
-				nptr.off = nptr.child(i)
-				node = nptr.read()
-				if node_walks++; node_walks > maxDepth {
-					panic(errors.New("node walks exceeded maxDepth"))
-				}
-			} else {
-				// insert the kv-pair
-				alignment_mask := 0
-				if val_typ == TypeObject || val_typ == TypeArray {
-					alignment_mask = 3
-				}
-				unaligned_val_offs := len(b.buf) + key_tag_size + len(key)
-				alignment_padding := ((unaligned_val_offs + alignment_mask) & ^alignment_mask) - unaligned_val_offs
-				entry_size += alignment_padding
-				for j := key_count; j > i; j-- {
-					node.hashes[j] = node.hashes[j-1]
-					node.kv_offs[j] = node.kv_offs[j-1]
-				}
-				node.hashes[i] = attempt_key_hash
-				node.setKeyCount(nptr.keyCount() + 1)
-				b.buf = b.buf[:len(b.buf)+alignment_padding]
-				node.kv_offs[i] = uint32(len(b.buf))
-				nptr.write(&node)
-				root.setSize(root.size() + 1)
-				break outer
-			}
-		}
-
-		if attempt++; attempt == probe_attempts {
-			panic(errors.New("maxProbes limit reached"))
-		}
-	}
-
-	if key != "" {
-		b.buf = binary.LittleEndian.AppendUint32(b.buf, uint32(((len(key)+1)<<2)|(key_tag_size-1)))
-		b.buf = b.buf[:len(b.buf)-4+key_tag_size]
+		tagSize := keyTagSize(key)
+		b.buf = binary.LittleEndian.AppendUint32(b.buf, uint32(((len(key)+1)<<2)|(tagSize-1)))
+		b.buf = b.buf[:len(b.buf)-4+tagSize]
 		b.buf = append(b.buf, []byte(key)...) // TODO: copy instead
 		b.buf = append(b.buf, 0)              // C string terminator
 	}
-	b.buf = append(b.buf, val_typ)
-	b.buf = append(b.buf, make([]byte, val_len)...)
-	if val_typ == TypeObject || val_typ == TypeArray {
-		return len(b.buf) - val_len - 1
-	}
-	return len(b.buf) - val_len
+	typOff := uint32(len(b.buf))
+	b.buf = appendVal(b.buf, valType, val)
+	return typOff, true
 }
 
-func (b *Buffer) get(root nodeptr, key string, keyHash uint32) (uint8, int) {
-	key_tag_size := keyTagSize(key)
-	probe_attempts := uint32(1)
-	if key != "" {
-		probe_attempts = maxProbes
+func (b *Buffer) insert(node treeNode, index uint8, key string, valType uint8) {
+	alignmentMask := 0
+	if valType == TypeObject || valType == TypeArray {
+		alignmentMask = 3
+	}
+	unalignedValOffs := len(b.buf) + keyTagSize(key) + len(key)
+	padding := ((unalignedValOffs + alignmentMask) & ^alignmentMask) - unalignedValOffs
+	b.buf = b.buf[:len(b.buf)+padding]
+	node.kvOff[index] = uint32(len(b.buf))
+	node.flush(b)
+}
+
+type keyVal struct {
+	key    []byte
+	typ    *uint8 // &b.buf[typOff]
+	val    []byte // if TypeString/TypeBytes, excludes length prefix and NULL terminator
+	typOff uint32
+}
+
+func (b *Buffer) readKV(off uint32, hasKey bool) (kv keyVal) {
+	buf := b.buf[off:]
+	if hasKey {
+		tagSize := uint32(buf[0]&3) + 1
+		keySize := binary.LittleEndian.Uint32(buf) & ((1 << 8 * tagSize) - 1) >> 2
+		kv.key = buf[tagSize:][:keySize-1] // exclude C string terminator
+		kv.typOff = tagSize + keySize
+		buf = buf[tagSize+keySize:]
+	}
+	kv.typOff += off
+	kv.typ = &buf[0]
+	kv.val = buf[1:][:typeSizes[*kv.typ]]
+	if *kv.typ == TypeString || *kv.typ == TypeBytes {
+		kv.val = kv.val[4:][:binary.LittleEndian.Uint32(kv.val)-1] // exclude C string terminator
+	}
+	return
+}
+
+// reuseSlot attempts to reuse an existing kv slot for a matching key.
+//
+// B-trees here store only hashes in nodes; the actual key bytes live in the
+// value buffer. If two different keys share a hash, we detect the mismatch
+// here and return ok=false so the caller can probe a different hash.
+func (b *Buffer) reuseSlot(node treeNode, index uint8, key string, valType uint8, val []byte) (uint32, bool) {
+	kv := b.readKV(node.kvOff[index], node.typ == TypeObject)
+	if key != "" && string(kv.key) != key {
+		return 0, false
+	}
+	clear(kv.val)
+	if len(kv.val) < len(val) {
+		// Existing value is too small. Allocate a new payload at the end of
+		// the buffer, and clear the old bytes to avoid stale data.
+		b.insert(node, index, key, valType)
+		return b.appendEntry(key, valType, val)
+	}
+	// Existing value is large enough; reuse it and clear the unused tail so
+	// reads don't see leftover bytes.
+	*kv.typ = valType
+	appendVal(b.buf[:kv.typOff], valType, val)
+	return kv.typOff, true
+}
+
+// insertIntoLeaf inserts a new hash slot in sorted order and allocates space
+// for its value in the buffer.
+//
+// A tree node stores parallel arrays of hashes and kv offsets. We shift the
+// arrays right to make room at index, then write the new hash and kv offset.
+func (b *Buffer) insertIntoLeaf(node treeNode, index uint8, hash uint32, key string, valType uint8) {
+	copy(node.hashes[index+1:], node.hashes[index:])
+	copy(node.kvOff[index+1:], node.kvOff[index:])
+
+	node.hashes[index] = hash
+	node.keyCount++
+	b.insert(node, index, key, valType)
+}
+
+type insertCursor struct {
+	node        treeNode
+	parent      treeNode
+	hasParent   bool
+	parentIndex uint8
+}
+
+// splitFullNode splits a full node around the median and promotes the median
+// hash into the parent. If there is no parent, it creates a new root.
+//
+// This is standard B-tree insertion: nodes hold sorted hashes and up to
+// maxKeyCount entries. When a node is full, we:
+//   - create a new sibling for the upper half,
+//   - move the median hash up into the parent,
+//   - keep the lower half in the original node.
+//
+// The cursor is updated to point at the correct child after the split.
+// The return value reports whether attemptHash was promoted to the parent.
+func (b *Buffer) splitFullNode(root treeNode, cursor *insertCursor, attemptHash uint32) bool {
+	b.reserveSplitSpace(cursor.hasParent)
+	if !cursor.hasParent {
+		// Splitting the root: turn the old root into a child and reset the
+		// new root to have a single child pointer.
+		b.splitRoot(root, cursor)
 	}
 
-	for attempt := uint32(0); attempt < probe_attempts; attempt++ {
-		attempt_key_hash := keyHash + attempt*attempt
+	// Allocate the new sibling node that will hold the upper half.
+	sibling := b.allocSibling(cursor.node)
+	sepHash := b.promoteMedian(&cursor.parent, cursor.node, sibling.off, cursor.parentIndex)
+	b.splitNode(&cursor.node, &sibling)
 
-		node := root
-		node_walks := 0
-		for {
-			key_count := node.keyCount()
-			i := 0
-			for i < key_count && node.hash(i) < attempt_key_hash {
-				i++
-			}
-			if i < key_count && node.hash(i) == attempt_key_hash { // target key found
-				target_offs := int(node.kv(i))
-				if key != "" {
-					if _, err := _verify_key(b.buf, key, key_tag_size, &target_offs); err == errCollision {
-						break // try next probe
-					} else if err != nil {
-						panic(err)
-					}
-				}
-				val_start_offs := target_offs
-				if _, err := _verify_val(b.buf, target_offs); err != nil {
-					panic(err)
-				}
-				typ := b.buf[val_start_offs]
-				if typ == TypeObject || typ == TypeArray {
-					return typ, val_start_offs
-				}
-				return typ, val_start_offs + 1
-			}
-			if node.child(0) == 0 {
-				panic(errors.New("key not found: " + key))
-			}
-			node.off = node.child(i)
+	// Determine which node the caller should continue searching in.
+	if attemptHash == sepHash {
+		// The median moved up; the caller must operate on the parent.
+		return true
+	}
+	if attemptHash > sepHash {
+		// The promoted median now lives in the parent at parentIndex.
+		cursor.node = sibling
+		cursor.parentIndex++
+	}
+	return false
+}
 
-			if node_walks++; node_walks > maxDepth {
-				panic(errors.New("node walks exceeded maxDepth"))
+func (b *Buffer) reserveSplitSpace(hasParent bool) {
+	buflenAligned := (len(b.buf) + 3) & ^3
+	newNodeSize := nodeSize
+	if hasParent {
+		newNodeSize = 2 * nodeSize
+	}
+	if len(b.buf)+newNodeSize+buflenAligned > cap(b.buf) {
+		b.buf = append(b.buf, make([]byte, newNodeSize+buflenAligned)...)
+	}
+	b.buf = b.buf[:buflenAligned]
+}
+
+func (b *Buffer) splitRoot(root treeNode, cursor *insertCursor) {
+	cursor.node.off = uint32(len(b.buf))
+	b.buf = b.buf[:len(b.buf)+nodeSize]
+	cursor.node.flush(b)
+	cursor.parent = treeNode{
+		off:      root.off,
+		typ:      root.typ,
+		gen:      root.gen,
+		size:     root.size,
+		childOff: [8]uint32{0: cursor.node.off},
+	}
+	cursor.hasParent = true
+	cursor.parentIndex = 0
+}
+
+func (b *Buffer) allocSibling(node treeNode) treeNode {
+	siblingOff := uint32(len(b.buf))
+	b.buf = b.buf[:len(b.buf)+nodeSize]
+	return treeNode{
+		off:      siblingOff,
+		typ:      node.typ,
+		keyCount: minKeyCount,
+	}
+}
+
+func (b *Buffer) promoteMedian(parent *treeNode, node treeNode, siblingOff uint32, i uint8) uint32 {
+	// Make space in the parent for the promoted median hash.
+	copy(parent.hashes[i+1:], parent.hashes[i:])
+	parent.hashes[i] = node.hashes[minKeyCount]
+	copy(parent.kvOff[i+1:], parent.kvOff[i:])
+	parent.kvOff[i] = node.kvOff[minKeyCount]
+	copy(parent.childOff[i+1:], parent.childOff[i:])
+	parent.childOff[i+1] = siblingOff
+
+	parent.keyCount++
+	parent.flush(b)
+	return parent.hashes[i]
+}
+
+func (b *Buffer) splitNode(node *treeNode, sibling *treeNode) {
+	// Clear the promoted slot and move upper-half keys/children to the sibling.
+	node.hashes[minKeyCount] = 0
+	node.kvOff[minKeyCount] = 0
+
+	copy(sibling.hashes[:minKeyCount], node.hashes[minKeyCount+1:])
+	copy(sibling.kvOff[:minKeyCount], node.kvOff[minKeyCount+1:])
+	copy(sibling.childOff[:minKeyCount+1], node.childOff[minKeyCount+1:])
+	clear(node.hashes[minKeyCount+1:])
+	clear(node.kvOff[minKeyCount+1:])
+	clear(node.childOff[minKeyCount+1:])
+	node.size = 0
+	node.keyCount = minKeyCount
+	node.flush(b)
+	sibling.flush(b)
+}
+
+// findSlot returns the index where hash should appear and whether it exists.
+// Nodes are small, so a simple linear scan is fine here.
+func findSlot(node treeNode, hash uint32) (uint8, bool) {
+	var i uint8
+	for i < node.keyCount && node.hashes[i] < hash {
+		i++
+	}
+	return i, i < node.keyCount && node.hashes[i] == hash
+}
+
+// trySet walks the hash B-tree and either reuses a matching slot or inserts a
+// new one. A false ok indicates a hash collision with a different key.
+//
+// The tree is indexed by hash (not full key). This function is called with a
+// candidate hash; the caller will retry with a different probe hash if we
+// discover a collision.
+func (b *Buffer) trySet(root treeNode, key string, attemptHash uint32, valType uint8, val []byte) (uint32, bool) {
+	cursor := insertCursor{node: root}
+	for range maxDepth {
+		if cursor.node.keyCount == maxKeyCount {
+			// Split on the way down so we never descend into a full node.
+			// This is the standard B-tree insertion strategy.
+			if b.splitFullNode(root, &cursor, attemptHash) {
+				// The hash we're looking for was promoted to the parent during
+				// the split. Operate on the parent directly instead of descending.
+				return b.reuseSlot(cursor.parent, cursor.parentIndex, key, valType, val)
 			}
 		}
+
+		i, exact := findSlot(cursor.node, attemptHash)
+		if exact {
+			// Hash exists in this node; confirm key match and reuse if possible.
+			return b.reuseSlot(cursor.node, i, key, valType, val)
+		}
+
+		if !cursor.node.hasChildren() {
+			// Leaf insert: create a new slot and append the value payload.
+			b.insertIntoLeaf(cursor.node, i, attemptHash, key, valType)
+			root = b.treeNode(root.off)
+			// root.size tracks the total number of entries for iteration.
+			root.size++
+			root.flush(b)
+			return b.appendEntry(key, valType, val)
+		}
+
+		// Internal node: descend into the child whose range would contain
+		// attemptHash, keeping parent info for possible future splits.
+		cursor.parent = cursor.node
+		cursor.hasParent = true
+		cursor.parentIndex = i
+		cursor.node = b.treeNode(cursor.node.childOff[i])
 	}
-	panic(errors.New("maxProbes limit reached"))
+	panic("node walks exceeded maxDepth")
+}
+
+func (b *Buffer) set(root treeNode, key string, keyHash uint32, valType uint8, val []byte) uint32 {
+	root.gen++
+	root.flush(b)
+	for probe := range uint32(maxProbes) {
+		if typOff, ok := b.trySet(root, key, keyHash+(probe*probe), valType, val); ok {
+			return typOff
+		}
+	}
+	panic("maxProbes limit reached")
+}
+
+func (b *Buffer) get(root treeNode, key string, keyHash uint32) keyVal {
+outer:
+	for probe := range uint32(maxProbes) {
+		probeHash := keyHash + probe*probe
+
+		node := root
+		for range maxDepth {
+			i, exact := findSlot(node, probeHash)
+			if exact {
+				kv := b.readKV(node.kvOff[i], key != "")
+				if key != "" && string(kv.key) != key {
+					continue outer // try next probe
+				}
+				return kv
+			}
+			if !node.hasChildren() {
+				panic("key not found: " + key)
+			}
+			node = b.treeNode(node.childOff[i])
+		}
+		panic("node walks exceeded maxDepth")
+	}
+	panic("maxProbes limit reached")
 }
 
 type Value struct {
@@ -734,18 +640,16 @@ func (v Value) Any() any {
 	}
 }
 
-func (v Value) Bool() bool       { return v.data[0] != 0 }
-func (v Value) Uint64() uint64   { return binary.LittleEndian.Uint64(v.data) }
-func (v Value) Int() int         { return int(v.Uint64()) }
-func (v Value) Float64() float64 { return math.Float64frombits(v.Uint64()) }
-func (v Value) RawBytes() []byte { return v.data[4:][:binary.LittleEndian.Uint32(v.data[:4])-1] }
-func (v Value) Bytes() []byte    { return slices.Clone(v.RawBytes()) }
-func (v Value) String() string   { return string(v.RawBytes()) }
-func (v Value) RawString() string {
-	return unsafe.String(&v.data[4], int(binary.LittleEndian.Uint32(v.data[:4])))
-}
-func (v Value) Object() Object { return Object{c: v.c} }
-func (v Value) Array() Array   { return Array{c: v.c} }
+func (v Value) Bool() bool        { return v.data[0] != 0 }
+func (v Value) Uint64() uint64    { return binary.LittleEndian.Uint64(v.data) }
+func (v Value) Int() int          { return int(v.Uint64()) }
+func (v Value) Float64() float64  { return math.Float64frombits(v.Uint64()) }
+func (v Value) RawBytes() []byte  { return v.data }
+func (v Value) Bytes() []byte     { return slices.Clone(v.RawBytes()) }
+func (v Value) String() string    { return string(v.RawBytes()) }
+func (v Value) RawString() string { return unsafeString(v.RawBytes()) }
+func (v Value) Object() Object    { return Object{c: v.c} }
+func (v Value) Array() Array      { return Array{c: v.c} }
 
 type IterElem struct {
 	Key   string
@@ -756,10 +660,28 @@ type IterElem struct {
 type Iter struct {
 	b         *Buffer
 	gen       uint32
-	node_offs [maxDepth + 1]uint32
-	depth     int
-	node_i    [maxDepth + 1]int
+	nodeOffs  [maxDepth + 1]uint32
+	depth     uint8
+	nodeIndex [maxDepth + 1]uint8
 	err       error
+}
+
+func newIter(b *Buffer, node treeNode) *Iter {
+	it := &Iter{
+		b:   b,
+		gen: node.gen,
+	}
+	it.nodeOffs[0] = node.off
+
+	for node.hasChildren() {
+		node = b.treeNode(node.childOff[0])
+		if it.depth++; it.depth > maxDepth {
+			return &Iter{err: errors.New("node walks exceeded maxDepth")}
+		}
+		it.nodeOffs[it.depth] = node.off
+		it.nodeIndex[it.depth] = 0
+	}
+	return it
 }
 
 func (it *Iter) Err() error {
@@ -769,57 +691,41 @@ func (it *Iter) Err() error {
 func (it *Iter) Next() *IterElem {
 	if it.err != nil {
 		return nil
-	} else if it.gen != (nodeptr{it.b, it.node_offs[0]}).gen() {
+	} else if it.gen != it.b.treeNode(it.nodeOffs[0]).gen {
 		return nil
 	}
-	node := nodeptr{it.b, it.node_offs[it.depth]}
-	nodeTyp := node.Type()
-	if !(nodeTyp == TypeObject || nodeTyp == TypeArray) {
+	node := it.b.treeNode(it.nodeOffs[it.depth])
+	if !(node.typ == TypeObject || node.typ == TypeArray) {
 		it.err = errors.New("not an array or object type")
 		return nil
-	}
-	if it.depth == 0 && it.node_i[it.depth] == node.keyCount() {
+	} else if it.depth == 0 && it.nodeIndex[it.depth] == node.keyCount {
 		return nil
 	}
 
-	var key string
-	var index int
-	target_offs := int(node.kv(it.node_i[it.depth]))
-	if nodeTyp == TypeObject { // write back key if not NULL
-		key_start_offs := target_offs
-		if _, err := _verify_key(it.b.buf, "", 0, &target_offs); err != nil {
-			it.err = err
-			return nil
-		}
-		key = string(it.b.buf[key_start_offs+1:][:(target_offs - key_start_offs - 2)]) // exclude C string terminator
-	} else {
-		index = int(node.hash(it.node_i[it.depth]))
-	}
-	val_start_offs := target_offs
-	if _, err := _verify_val(it.b.buf, target_offs); err != nil {
-		it.err = err
-		return nil
-	}
-	typ, val := it.b.buf[val_start_offs], it.b.buf[val_start_offs+1:]
-	var c container
-	if typ == TypeObject || typ == TypeArray {
-		c = container{it.b, typ, nodeptr{it.b, uint32(val_start_offs)}}
-	}
-	it.node_i[it.depth]++
+	kv := it.b.readKV(node.kvOff[it.nodeIndex[it.depth]], node.typ == TypeObject)
+	index := int(node.hashes[it.nodeIndex[it.depth]])
+	it.nodeIndex[it.depth]++
 
-	for node.child(it.node_i[it.depth]) != 0 { // has children, travel down
-		next_node_offs := node.child(it.node_i[it.depth])
-		node = nodeptr{it.b, next_node_offs}
+	for node.hasChildren() {
+		node = it.b.treeNode(node.childOff[it.nodeIndex[it.depth]])
 		if it.depth++; it.depth > maxDepth {
 			it.err = errors.New("node walks exceeded maxDepth")
 			return nil
 		}
-		it.node_offs[it.depth] = next_node_offs
-		it.node_i[it.depth] = 0
+		it.nodeOffs[it.depth] = node.off
+		it.nodeIndex[it.depth] = 0
 	}
-	for it.depth > 0 && it.node_i[it.depth] == node.keyCount() {
+	for it.depth > 0 && it.nodeIndex[it.depth] == node.keyCount {
 		it.depth--
-		node = nodeptr{it.b, it.node_offs[it.depth]}
+		node = it.b.treeNode(it.nodeOffs[it.depth])
 	}
-	return &IterElem{key, index, Value{Type: typ, data: val, c: c}}
+	return &IterElem{
+		Key:   unsafeString(kv.key),
+		Index: index,
+		Value: Value{
+			Type: *kv.typ,
+			data: kv.val,
+			c:    container{it.b, *kv.typ, kv.typOff},
+		},
+	}
 }
