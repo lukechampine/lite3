@@ -1,6 +1,7 @@
 package lite3
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -10,19 +11,17 @@ import (
 // clean up constants etc.
 // panics -> errors or bools
 // support containers in iter
-//  - remove off from container?
 // JSON
 // jq-style Path(...)
 // growable buffer
 // ditch "generation" system? just don't share memory lol
-// get rid of cast()
-// - separate fields for size and key count
-// combine get and set into upsert
+// combine get and set into upsert?
+// replace node with nodeptr
 // rename elite
 // fuzzing/hardening against untrusted buffers
 
 func TestBasic(t *testing.T) {
-	b := New(make([]byte, 0, 1024))
+	b := New(nil)
 	o := b.SetRootObject()
 	o.SetBool("foo", true)
 
@@ -42,7 +41,7 @@ func TestBasic(t *testing.T) {
 }
 
 func TestIter(t *testing.T) {
-	b := New(make([]byte, 0, 1024))
+	b := New(nil)
 
 	o := b.SetRootObject()
 	o.SetInt("lap", 55)
@@ -83,7 +82,7 @@ func TestIter(t *testing.T) {
 
 func TestJSON(t *testing.T) {
 	t.SkipNow()
-	b := New(make([]byte, 0, 1024))
+	b := New(nil)
 
 	o := b.SetRootObject()
 	o.SetString("event", "lap_complete")
@@ -170,7 +169,7 @@ func TestJohnDoe(t *testing.T) {
 }
 
 func TestOverwrite(t *testing.T) {
-	b := New(make([]byte, 0, 1024))
+	b := New(nil)
 	o := b.SetRootObject()
 
 	o.SetInt("foo", 3)
@@ -179,15 +178,85 @@ func TestOverwrite(t *testing.T) {
 	if foo := o.Int("foo"); foo != 5 {
 		t.Errorf("foo = %d; want 5", foo)
 	}
+
+	// overwrite a short value with a longer one (forcing an append)
+	o.SetBytes("bar", []byte("hi"))
+	o.SetBytes("bar", []byte("hello my friend, how are you doing today?"))
+
+	if bar := o.RawBytes("bar"); !bytes.Equal(bar, []byte("hello my friend, how are you doing today?")) {
+		t.Errorf("bar = %q; want %q", bar, "hello my friend, how are you doing today?")
+	}
 }
 
 func TestNesting(t *testing.T) {
-	b := New(make([]byte, 0, 1024))
+	b := New(nil)
 
 	o := b.SetRootObject()
-	o.SetObject("nested").SetInt("foo", 3)
+	o.SetObject("foo").SetObject("bar").SetInt("baz", 3)
 
-	if foo := o.Object("nested").Int("foo"); foo != 3 {
-		t.Errorf("Nested foo = %d; want 3", foo)
+	if baz := o.Object("foo").Object("bar").Int("baz"); baz != 3 {
+		t.Errorf("Nested baz = %d; want 3", baz)
+	}
+
+	it := o.Iter()
+	e := it.Next()
+	if err := it.Err(); err != nil {
+		t.Fatalf("Iter Next error: %v", err)
+	} else if e.Key != "foo" || e.Value.Type != TypeObject {
+		t.Errorf("Iter Next = (%q, %v); want (\"foo\", TypeObject)", e.Key, e.Value.Type)
+	}
+
+	foo := e.Value.Object()
+	it = foo.Iter()
+	e = it.Next()
+	if err := it.Err(); err != nil {
+		t.Fatalf("Iter Next error: %v", err)
+	} else if e.Key != "bar" || e.Value.Type != TypeObject {
+		t.Errorf("Iter Next = (%q, %v); want (\"bar\", TypeObject)", e.Key, e.Value.Type)
+	}
+	bar := e.Value.Object()
+	if baz := bar.Int("baz"); baz != 3 {
+		t.Errorf("Nested baz via Iter = %d; want 3", baz)
+	}
+}
+
+func BenchmarkJohnDoe(b *testing.B) {
+	buf := New(make([]byte, 0, 2048))
+	for b.Loop() {
+		buf.buf = buf.buf[:0]
+		o := buf.SetRootObject()
+
+		o.SetInt("user_id", 12345)
+		o.SetString("username", "jdoe")
+		o.SetString("email_address", "jdoe@example.com")
+		o.SetBool("is_active", true)
+		o.SetFloat64("account_balance", 259.75)
+		o.SetString("signup_date_str", "2023-08-15")
+		o.SetString("last_login_date_iso", "2025-09-13T13:20:00Z")
+		o.SetInt("birth_year", 1996)
+		o.SetString("phone_number", "+14155555671")
+		o.SetString("preferred_language", "en")
+		o.SetString("time_zone", "Europe/Berlin")
+		o.SetInt("loyalty_points", 845)
+		o.SetFloat64("avg_session_length_minutes", 14.3)
+		o.SetBool("newsletter_subscribed", false)
+		o.SetString("ip_address", "192.168.0.42")
+		o.SetNull("notes")
+
+		_ = o.Int("user_id")
+		_ = o.RawString("username")
+		_ = o.RawString("email_address")
+		_ = o.Bool("is_active")
+		_ = o.Float64("account_balance")
+		_ = o.RawString("signup_date_str")
+		_ = o.RawString("last_login_date_iso")
+		_ = o.Int("birth_year")
+		_ = o.RawString("phone_number")
+		_ = o.RawString("preferred_language")
+		_ = o.RawString("time_zone")
+		_ = o.Int("loyalty_points")
+		_ = o.Float64("avg_session_length_minutes")
+		_ = o.Bool("newsletter_subscribed")
+		_ = o.RawString("ip_address")
 	}
 }
