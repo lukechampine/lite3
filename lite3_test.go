@@ -70,23 +70,30 @@ func TestIter(t *testing.T) {
 }
 
 func TestJSON(t *testing.T) {
-	t.SkipNow()
 	b := New(nil)
-
 	o := b.SetRootObject()
 	o.SetString("event", "lap_complete")
-	o.SetInt("lap", 55)
+	o.SetInt("lap", 56)
 	o.SetFloat64("time_sec", 88.427)
 
-	js, _ := json.Marshal(o)
-	if string(js) != `{"event":"lap_complete","lap":55,"time_sec":88.427}` {
+	js, _ := json.Marshal(b)
+	if string(js) != `{"lap":56,"event":"lap_complete","time_sec":88.427}` {
 		t.Errorf("Unexpected JSON: %s", js)
 	}
 
-	o.SetInt("lap", 56)
-	js, _ = json.Marshal(o)
-	if string(js) != `{"event":"lap_complete","lap":56,"time_sec":88.427}` {
-		t.Errorf("Unexpected JSON: %s", js)
+	b2 := New(nil)
+	if err := json.Unmarshal(js, b2); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	o2 := b2.Root().(Object)
+	if lap := o2.Int("lap"); lap != 56 {
+		t.Errorf("Unmarshaled lap = %d; want 56", lap)
+	}
+	if event := o2.String("event"); event != "lap_complete" {
+		t.Errorf("Unmarshaled event = %q; want \"lap_complete\"", event)
+	}
+	if timeSec := o2.Float64("time_sec"); timeSec != 88.427 {
+		t.Errorf("Unmarshaled time_sec = %f; want 88.427", timeSec)
 	}
 }
 

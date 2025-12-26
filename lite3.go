@@ -2,10 +2,16 @@
 package lite3
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"slices"
+	"strconv"
+	"strings"
 	"unsafe"
 )
 
@@ -66,6 +72,22 @@ func (b *Buffer) setRootContainer(typ uint8) container {
 		b:   b,
 		typ: typ,
 		off: 0,
+	}
+}
+
+func (b *Buffer) rootContainer() container {
+	return container{b: b, typ: b.buf[0], off: 0}
+}
+
+func (b *Buffer) Root() any {
+	c := b.rootContainer()
+	switch c.typ {
+	case TypeObject:
+		return Object{c}
+	case TypeArray:
+		return Array{c}
+	default:
+		return nil
 	}
 }
 
@@ -191,10 +213,10 @@ type container struct {
 	off uint32
 }
 
-func (c *container) count() int  { return int(c.b.treeNode(c.off).size) }
-func (c *container) iter() *Iter { return newIter(c.b, c.b.treeNode(c.off)) }
+func (c container) count() int  { return int(c.b.treeNode(c.off).size) }
+func (c container) iter() *Iter { return newIter(c.b, c.b.treeNode(c.off)) }
 
-func (c *container) setContainer(key string, keyHash uint32, typ uint8) container {
+func (c container) setContainer(key string, keyHash uint32, typ uint8) container {
 	return container{
 		b:   c.b,
 		typ: typ,
@@ -202,7 +224,7 @@ func (c *container) setContainer(key string, keyHash uint32, typ uint8) containe
 	}
 }
 
-func (c *container) container(key string, keyHash uint32, exp uint8) container {
+func (c container) container(key string, keyHash uint32, exp uint8) container {
 	kv := c.b.get(c.b.treeNode(c.off), key, keyHash)
 	if *kv.typ != exp {
 		panic("type mismatch")
@@ -214,11 +236,11 @@ func (c *container) container(key string, keyHash uint32, exp uint8) container {
 	}
 }
 
-func (c *container) setNull(key string, keyHash uint32) {
+func (c container) setNull(key string, keyHash uint32) {
 	c.b.set(c.b.treeNode(c.off), key, keyHash, TypeNull, nil)
 }
 
-func (c *container) setBool(key string, keyHash uint32, val bool) {
+func (c container) setBool(key string, keyHash uint32, val bool) {
 	var v byte
 	if val {
 		v = 1
@@ -226,84 +248,84 @@ func (c *container) setBool(key string, keyHash uint32, val bool) {
 	c.b.set(c.b.treeNode(c.off), key, keyHash, TypeBool, []byte{v})
 }
 
-func (c *container) bool(key string, keyHash uint32) bool {
+func (c container) bool(key string, keyHash uint32) bool {
 	kv := c.b.get(c.b.treeNode(c.off), key, keyHash)
 	return kv.val[0] != 0
 }
 
-func (c *container) setNumber(key string, keyHash uint32, typ uint8, val uint64) {
+func (c container) setNumber(key string, keyHash uint32, typ uint8, val uint64) {
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], val)
 	c.b.set(c.b.treeNode(c.off), key, keyHash, typ, buf[:])
 }
 
-func (c *container) number(key string, keyHash uint32, exp uint8) uint64 {
+func (c container) number(key string, keyHash uint32, exp uint8) uint64 {
 	kv := c.b.get(c.b.treeNode(c.off), key, keyHash)
 	return binary.LittleEndian.Uint64(kv.val)
 }
 
-func (c *container) setInt(key string, keyHash uint32, val int) {
+func (c container) setInt(key string, keyHash uint32, val int) {
 	c.setNumber(key, keyHash, TypeInt, uint64(val))
 }
 
-func (c *container) int(key string, keyHash uint32) int {
+func (c container) int(key string, keyHash uint32) int {
 	return int(c.number(key, keyHash, TypeInt))
 }
 
-func (c *container) setFloat64(key string, keyHash uint32, val float64) {
+func (c container) setFloat64(key string, keyHash uint32, val float64) {
 	c.setNumber(key, keyHash, TypeFloat, math.Float64bits(val))
 }
 
-func (c *container) float64(key string, keyHash uint32) float64 {
+func (c container) float64(key string, keyHash uint32) float64 {
 	return math.Float64frombits(c.number(key, keyHash, TypeFloat))
 }
 
-func (c *container) setTypedBytes(key string, keyHash uint32, typ uint8, val []byte) {
+func (c container) setTypedBytes(key string, keyHash uint32, typ uint8, val []byte) {
 	c.b.set(c.b.treeNode(c.off), key, keyHash, typ, val)
 }
 
-func (c *container) typedBytes(key string, keyHash uint32, exp uint8) []byte {
+func (c container) typedBytes(key string, keyHash uint32, exp uint8) []byte {
 	kv := c.b.get(c.b.treeNode(c.off), key, keyHash)
 	return kv.val
 }
 
-func (c *container) setBytes(key string, keyHash uint32, val []byte) {
+func (c container) setBytes(key string, keyHash uint32, val []byte) {
 	c.setTypedBytes(key, keyHash, TypeBytes, val)
 }
 
-func (c *container) bytes(key string, keyHash uint32) []byte {
+func (c container) bytes(key string, keyHash uint32) []byte {
 	return slices.Clone(c.rawBytes(key, keyHash))
 }
 
-func (c *container) rawBytes(key string, keyHash uint32) []byte {
+func (c container) rawBytes(key string, keyHash uint32) []byte {
 	return c.typedBytes(key, keyHash, TypeBytes)
 }
 
-func (c *container) setString(key string, keyHash uint32, val string) {
+func (c container) setString(key string, keyHash uint32, val string) {
 	c.setTypedBytes(key, keyHash, TypeString, unsafeSlice(val))
 }
 
-func (c *container) string(key string, keyHash uint32) string {
+func (c container) string(key string, keyHash uint32) string {
 	return string(c.typedBytes(key, keyHash, TypeString))
 }
 
-func (c *container) rawString(key string, keyHash uint32) string {
+func (c container) rawString(key string, keyHash uint32) string {
 	return unsafeString(c.typedBytes(key, keyHash, TypeString))
 }
 
-func (c *container) setObject(key string, keyHash uint32) Object {
+func (c container) setObject(key string, keyHash uint32) Object {
 	return Object{c.setContainer(key, keyHash, TypeObject)}
 }
 
-func (c *container) object(key string, keyHash uint32) Object {
+func (c container) object(key string, keyHash uint32) Object {
 	return Object{c.container(key, keyHash, TypeObject)}
 }
 
-func (c *container) setArray(key string, keyHash uint32) Array {
+func (c container) setArray(key string, keyHash uint32) Array {
 	return Array{c.setContainer(key, keyHash, TypeArray)}
 }
 
-func (c *container) array(key string, keyHash uint32) Array {
+func (c container) array(key string, keyHash uint32) Array {
 	return Array{c.container(key, keyHash, TypeArray)}
 }
 
@@ -727,5 +749,117 @@ func (it *Iter) Next() *IterElem {
 			data: kv.val,
 			c:    container{it.b, *kv.typ, kv.typOff},
 		},
+	}
+}
+
+func (v Value) appendJSON(buf *bytes.Buffer) {
+	switch v.Type {
+	case TypeNull:
+		buf.WriteString("null")
+	case TypeBool:
+		buf.WriteString(strconv.FormatBool(v.Bool()))
+	case TypeInt:
+		buf.WriteString(strconv.FormatInt(int64(v.Int()), 10))
+	case TypeFloat:
+		buf.WriteString(strconv.FormatFloat(v.Float64(), 'g', -1, 64))
+	case TypeBytes:
+		buf.WriteByte('"')
+		buf.WriteString(base64.StdEncoding.EncodeToString(v.Bytes()))
+		buf.WriteByte('"')
+	case TypeString:
+		buf.WriteString(strconv.Quote(v.String()))
+	case TypeObject, TypeArray:
+		v.c.appendJSON(buf)
+	default:
+		panic("unhandled type")
+	}
+}
+
+func (c container) appendJSON(buf *bytes.Buffer) {
+	buf.WriteByte('{')
+	it := c.iter()
+	first := true
+	for elem := it.Next(); elem != nil; elem = it.Next() {
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		if elem.Key != "" {
+			buf.WriteByte('"')
+			buf.WriteString(elem.Key)
+			buf.WriteByte('"')
+			buf.WriteByte(':')
+		}
+		elem.Value.appendJSON(buf)
+	}
+	buf.WriteByte('}')
+}
+
+func (b *Buffer) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	b.rootContainer().appendJSON(&buf)
+	return buf.Bytes(), nil
+}
+
+func (c container) unmarshalJSON(dec *json.Decoder) error {
+	for i := uint32(0); ; i++ {
+		t, err := dec.Token()
+		if err == io.EOF {
+			return nil
+		} else if err != nil {
+			return err
+		} else if t == json.Delim('}') || t == json.Delim(']') {
+			return nil
+		}
+		key := ""
+		hash := i
+		if c.typ == TypeObject {
+			key = t.(string)
+			hash = keyHash(key)
+			t, err = dec.Token()
+			if err != nil {
+				return err
+			}
+		}
+
+		switch t := t.(type) {
+		case string:
+			c.setString(key, hash, t)
+		case json.Number:
+			if strings.ContainsAny(t.String(), ".eE") {
+				f, err := t.Float64()
+				if err != nil {
+					return err
+				}
+				c.setFloat64(key, hash, f)
+			} else {
+				i, err := t.Int64()
+				if err != nil {
+					return err
+				}
+				c.setNumber(key, hash, TypeInt, uint64(i))
+			}
+		case bool:
+			c.setBool(key, hash, t)
+		case nil:
+			c.setNull(key, hash)
+		default:
+			panic("unhandled JSON token type")
+		}
+	}
+}
+
+func (b *Buffer) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	t, err := dec.Token()
+	if err == io.EOF {
+		return nil
+	} else if t == json.Delim('[') {
+		return b.SetRootArray().c.unmarshalJSON(dec)
+	} else if t == json.Delim('{') {
+		return b.SetRootObject().c.unmarshalJSON(dec)
+	} else {
+		return errors.New("invalid JSON root")
 	}
 }
