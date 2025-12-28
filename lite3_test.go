@@ -19,8 +19,8 @@ func TestBasic(t *testing.T) {
 	}
 
 	a := b.SetRootArray()
-	a.SetString(a.Count(), "hello")
-	a.SetString(a.Count(), "world")
+	a.SetString(a.Len(), "hello")
+	a.SetString(a.Len(), "world")
 	if val := a.String(0); val != "hello" {
 		t.Errorf(`Index(0).String() = %q; want "hello"`, val)
 	}
@@ -118,8 +118,8 @@ func TestJohnDoe(t *testing.T) {
 	o.SetString("ip_address", "192.168.0.42")
 	o.SetNull("notes")
 
-	if o.Count() != 16 {
-		t.Errorf("Object Count() = %d; want 16", o.Count())
+	if o.NumFields() != 16 {
+		t.Errorf("Object NumFields() = %d; want 16", o.NumFields())
 	}
 
 	checkInt := func(key string, expected int) {
@@ -279,8 +279,8 @@ func TestNestedSplitRightChild(t *testing.T) {
 	if v := nested.Int(keys[7].key); v != 77 {
 		t.Errorf("nested.Int(%q) = %d; want 77", keys[7].key, v)
 	}
-	if nested.Count() != 8 {
-		t.Errorf("nested.Count() = %d; want 8", nested.Count())
+	if nested.NumFields() != 8 {
+		t.Errorf("nested.NumFields() = %d; want 8", nested.NumFields())
 	}
 }
 
@@ -318,8 +318,8 @@ func TestHashCollision(t *testing.T) {
 	o.SetInt("ab", 1)
 	o.SetInt("bA", 2)
 
-	if o.Count() != 2 {
-		t.Errorf("Count() = %d; want 2", o.Count())
+	if o.NumFields() != 2 {
+		t.Errorf("NumFields() = %d; want 2", o.NumFields())
 	}
 	if v := o.Int("ab"); v != 1 {
 		t.Errorf("Int(\"ab\") = %d; want 1", v)
