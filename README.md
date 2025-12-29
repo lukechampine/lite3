@@ -15,8 +15,8 @@ in `O(log n)` time.
 ## Usage
 
 The API is fairly low-level. There are two container types: `Object` and
-`Array`, which each have `Set` methods for each supported type, and a `Value`
-method for reading values of arbitrary type.
+`Array`, which each have `Get` and `Set` methods for reading and writing `Value`
+objects.
 
 ```go
 import "lukechampine.com/lite3"
@@ -25,18 +25,25 @@ import "fmt"
 func main() {
     b := lite3.New(nil)
     o := b.SetRootObject()
-	o.SetBool("foo", true)
+	o.Set("foo", lite3.Bool(true))
     fmt.Println(o.Value("foo").Bool()) // true
     
     // nested containers:
     a := o.SetArray("bar")
-    a.SetString(0, "hello")
-    a.SetString(1, "world")
+    a.Set(0, lite3.String("hello"))
+    a.Set(1, lite3.String("world"))
 
     // iteration:
-    it := o.Iter()
-    fmt.Println(it.Next().Value) // <array>
-    fmt.Println(it.Next().Value) // true
+    for key, val := range o.All() {
+        if val.Type == lite3.TypeArray {
+            for i, val := range val.All() {
+                fmt.Println(i, val) // 0 hello
+                break
+            }
+        } else {
+            fmt.Println(key, val) // foo true
+        }
+    }
 
     // json compatibility:
     js, _ := b.MarshalJSON()

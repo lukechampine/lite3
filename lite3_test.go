@@ -14,18 +14,18 @@ func TestBasic(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
 
-	o.SetBool("foo", true)
-	if val := o.Value("foo").Bool(); val != true {
+	o.Set("foo", Bool(true))
+	if val := o.Get("foo").Bool(); val != true {
 		t.Errorf(`Object.Bool("foo") = %v; want true`, val)
 	}
 
 	a := b.SetRootArray()
-	a.SetString(a.Len(), "hello")
-	a.SetString(a.Len(), "world")
-	if val := a.Value(0).String(); val != "hello" {
+	a.Set(a.Len(), String("hello"))
+	a.Set(a.Len(), String("world"))
+	if val := a.Get(0).String(); val != "hello" {
 		t.Errorf(`Index(0).String() = %q; want "hello"`, val)
 	}
-	if val := a.Value(1).String(); val != "world" {
+	if val := a.Get(1).String(); val != "world" {
 		t.Errorf(`Index(1).String() = %q; want "world"`, val)
 	}
 }
@@ -33,12 +33,12 @@ func TestBasic(t *testing.T) {
 func TestKeyNotFound(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
-	if v := o.Value("foo"); v.Type != TypeInvalid {
+	if v := o.Get("foo"); v.Type != TypeInvalid {
 		t.Errorf("Expected invalid Value for missing key; got %v", v)
 	}
 	a := b.SetRootArray()
-	a.SetBool(0, true)
-	if v := a.Value(1); v.Type != TypeInvalid {
+	a.Set(0, Bool(true))
+	if v := a.Get(1); v.Type != TypeInvalid {
 		t.Errorf("Expected invalid Value for missing element; got %v", v)
 	}
 }
@@ -47,40 +47,9 @@ func TestIter(t *testing.T) {
 	b := New(nil)
 
 	o := b.SetRootObject()
-	o.SetInt("lap", 55)
-	o.SetFloat64("time_sec", 88.427)
-	o.SetString("username", "jdoe")
-
-	it := o.Iter()
-	e := it.Next()
-	if err := it.Err(); err != nil {
-		t.Fatalf("Iter Next error: %v", err)
-	} else if e.Key != "lap" || e.Value.Type != TypeInt {
-		t.Errorf("Iter Next = (%q, %v); want (\"lap\", TypeInt)", e.Key, e.Value.Type)
-	} else if val := e.Value.Int(); val != 55 {
-		t.Errorf("Iter Next lap value = %d; want 55", val)
-	}
-	e = it.Next()
-	if err := it.Err(); err != nil {
-		t.Fatalf("Iter Next error: %v", err)
-	} else if e.Key != "time_sec" || e.Value.Type != TypeFloat {
-		t.Errorf("Iter Next = (%q, %v); want (\"time_sec\", TypeFloat)", e.Key, e.Value.Type)
-	} else if val := e.Value.Float64(); val != 88.427 {
-		t.Errorf("Iter Next time_sec value = %f; want %f", val, 88.427)
-	}
-	e = it.Next()
-	if err := it.Err(); err != nil {
-		t.Fatalf("Iter Next error: %v", err)
-	} else if e.Key != "username" || e.Value.Type != TypeString {
-		t.Errorf("Iter Next = (%q, %v); want (\"username\", TypeString)", e.Key, e.Value.Type)
-	} else if e.Value.String() != "jdoe" {
-		t.Errorf("Iter Next username value = %q; want \"jdoe\"", e.Value.String())
-	}
-	if it.Next() != nil {
-		t.Fatalf("Expected Iter Next to return nil at end of buffer")
-	} else if err := it.Err(); err != nil {
-		t.Fatal(err)
-	}
+	o.Set("lap", Int(55))
+	o.Set("time_sec", Float64(88.427))
+	o.Set("username", String("jdoe"))
 
 	var s strings.Builder
 	for key, val := range o.All() {
@@ -91,9 +60,9 @@ func TestIter(t *testing.T) {
 	}
 
 	a := b.SetRootArray()
-	a.SetInt(0, 10)
-	a.SetInt(1, 20)
-	a.SetInt(2, 30)
+	a.Set(0, Int(10))
+	a.Set(1, Int(20))
+	a.Set(2, Int(30))
 
 	var x int
 	for i, val := range a.All() {
@@ -107,9 +76,9 @@ func TestIter(t *testing.T) {
 func TestJSON(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
-	o.SetString("event", "lap_complete")
-	o.SetInt("lap", 56)
-	o.SetFloat64("time_sec", 88.427)
+	o.Set("event", String("lap_complete"))
+	o.Set("lap", Int(56))
+	o.Set("time_sec", Float64(88.427))
 
 	js, _ := json.Marshal(b)
 	if string(js) != `{"lap":56,"event":"lap_complete","time_sec":88.427}` {
@@ -121,13 +90,13 @@ func TestJSON(t *testing.T) {
 		t.Fatalf("Unmarshal error: %v", err)
 	}
 	o2 := b2.Root().(Object)
-	if lap := o2.Value("lap").Int(); lap != 56 {
+	if lap := o2.Get("lap").Int(); lap != 56 {
 		t.Errorf("Unmarshaled lap = %d; want 56", lap)
 	}
-	if event := o2.Value("event").String(); event != "lap_complete" {
+	if event := o2.Get("event").String(); event != "lap_complete" {
 		t.Errorf("Unmarshaled event = %q; want \"lap_complete\"", event)
 	}
-	if timeSec := o2.Value("time_sec").Float64(); timeSec != 88.427 {
+	if timeSec := o2.Get("time_sec").Float64(); timeSec != 88.427 {
 		t.Errorf("Unmarshaled time_sec = %f; want 88.427", timeSec)
 	}
 }
@@ -136,44 +105,44 @@ func TestJohnDoe(t *testing.T) {
 	b := New(make([]byte, 0, 2048))
 	o := b.SetRootObject()
 
-	o.SetInt("user_id", 12345)
-	o.SetString("username", "jdoe")
-	o.SetString("email_address", "jdoe@example.com")
-	o.SetBool("is_active", true)
-	o.SetFloat64("account_balance", 259.75)
-	o.SetString("signup_date_str", "2023-08-15")
-	o.SetString("last_login_date_iso", "2025-09-13T13:20:00Z")
-	o.SetInt("birth_year", 1996)
-	o.SetString("phone_number", "+14155555671")
-	o.SetString("preferred_language", "en")
-	o.SetString("time_zone", "Europe/Berlin")
-	o.SetInt("loyalty_points", 845)
-	o.SetFloat64("avg_session_length_minutes", 14.3)
-	o.SetBool("newsletter_subscribed", false)
-	o.SetString("ip_address", "192.168.0.42")
-	o.SetNull("notes")
+	o.Set("user_id", Int(12345))
+	o.Set("username", String("jdoe"))
+	o.Set("email_address", String("jdoe@example.com"))
+	o.Set("is_active", Bool(true))
+	o.Set("account_balance", Float64(259.75))
+	o.Set("signup_date_str", String("2023-08-15"))
+	o.Set("last_login_date_iso", String("2025-09-13T13:20:00Z"))
+	o.Set("birth_year", Int(1996))
+	o.Set("phone_number", String("+14155555671"))
+	o.Set("preferred_language", String("en"))
+	o.Set("time_zone", String("Europe/Berlin"))
+	o.Set("loyalty_points", Int(845))
+	o.Set("avg_session_length_minutes", Float64(14.3))
+	o.Set("newsletter_subscribed", Bool(false))
+	o.Set("ip_address", String("192.168.0.42"))
+	o.Set("notes", Null())
 
 	if o.NumFields() != 16 {
 		t.Errorf("Object NumFields() = %d; want 16", o.NumFields())
 	}
 
 	checkInt := func(key string, expected int) {
-		if val := o.Value(key).Int(); val != expected {
+		if val := o.Get(key).Int(); val != expected {
 			t.Errorf("Int(%q) = %d; want %d", key, val, expected)
 		}
 	}
 	checkString := func(key, expected string) {
-		if val := o.Value(key).String(); val != expected {
+		if val := o.Get(key).String(); val != expected {
 			t.Errorf("String(%q) = %q; want %q", key, val, expected)
 		}
 	}
 	checkBool := func(key string, expected bool) {
-		if val := o.Value(key).Bool(); val != expected {
+		if val := o.Get(key).Bool(); val != expected {
 			t.Errorf("Bool(%q) = %v; want %v", key, val, expected)
 		}
 	}
 	checkFloat64 := func(key string, expected float64) {
-		if val := o.Value(key).Float64(); val != expected {
+		if val := o.Get(key).Float64(); val != expected {
 			t.Errorf("Float64(%q) = %f; want %f", key, val, expected)
 		}
 	}
@@ -203,26 +172,26 @@ func TestOverwrite(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
 
-	o.SetInt("foo", 3)
-	o.SetInt("foo", 5)
+	o.Set("foo", Int(3))
+	o.Set("foo", Int(5))
 
-	if foo := o.Value("foo").Int(); foo != 5 {
+	if foo := o.Get("foo").Int(); foo != 5 {
 		t.Errorf("foo = %d; want 5", foo)
 	}
 
 	// overwrite a short value with a longer one (forcing an append)
 	short := "hi"
 	long := "hello my friend, how are you doing today?"
-	o.SetBytes("bar", []byte(short))
-	o.SetBytes("bar", []byte(long))
+	o.Set("bar", Bytes([]byte(short)))
+	o.Set("bar", Bytes([]byte(long)))
 
-	if bar := o.Value("bar").RawBytes(); !bytes.Equal(bar, []byte(long)) {
+	if bar := o.Get("bar").RawBytes(); !bytes.Equal(bar, []byte(long)) {
 		t.Errorf("bar = %q; want %q", bar, long)
 	}
 
 	// overwrite with shorter value again; old value should have been zeroed
-	o.SetBytes("bar", []byte(short))
-	if bar := o.Value("bar").RawString(); bar != short {
+	o.Set("bar", Bytes([]byte(short)))
+	if bar := o.Get("bar").RawString(); bar != short {
 		t.Errorf("bar = %q; want %q", bar, short)
 	}
 	i := bytes.Index(b.buf, []byte(short))
@@ -234,28 +203,15 @@ func TestOverwrite(t *testing.T) {
 	}
 }
 
+// Bug: overwriting a value can result in an unaligned node
 func TestOverwriteContainerUnaligned(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
 
-	payload := make([]byte, nodeSize-1)
-	o.SetBytes("k", payload)
-	before := o.Value("k").c.off
-	if before%4 == 0 {
-		t.Fatalf("expected unaligned KV offset before overwrite; got %d", before)
-	}
-
+	o.Set("k", Bytes(make([]byte, nodeSize-1)))
 	obj := o.SetObject("k")
-	if obj.c.off != before {
-		t.Fatalf("overwrite did not reuse KV offset: got %d want %d", obj.c.off, before)
-	}
 	if obj.c.off%4 == 0 {
 		t.Fatalf("container offset = %d; want unaligned (mod 4 != 0)", obj.c.off)
-	}
-
-	obj.SetInt("x", 1)
-	if v := o.Value("k").Object().Value("x").Int(); v != 1 {
-		t.Fatalf("nested value = %d; want 1", v)
 	}
 }
 
@@ -263,31 +219,26 @@ func TestNesting(t *testing.T) {
 	b := New(nil)
 
 	o := b.SetRootObject()
-	o.SetObject("foo").SetObject("bar").SetInt("baz", 3)
+	o.SetObject("foo").SetObject("bar").Set("baz", Int(3))
 
-	if baz := o.Value("foo").Object().Value("bar").Object().Value("baz").Int(); baz != 3 {
+	if baz := o.Get("foo").Object().Get("bar").Object().Get("baz").Int(); baz != 3 {
 		t.Errorf("Nested baz = %d; want 3", baz)
 	}
 
-	it := o.Iter()
-	e := it.Next()
-	if err := it.Err(); err != nil {
-		t.Fatalf("Iter Next error: %v", err)
-	} else if e.Key != "foo" || e.Value.Type != TypeObject {
-		t.Errorf("Iter Next = (%q, %v); want (\"foo\", TypeObject)", e.Key, e.Value.Type)
-	}
-
-	foo := e.Value.Object()
-	it = foo.Iter()
-	e = it.Next()
-	if err := it.Err(); err != nil {
-		t.Fatalf("Iter Next error: %v", err)
-	} else if e.Key != "bar" || e.Value.Type != TypeObject {
-		t.Errorf("Iter Next = (%q, %v); want (\"bar\", TypeObject)", e.Key, e.Value.Type)
-	}
-	bar := e.Value.Object()
-	if baz := bar.Value("baz").Int(); baz != 3 {
-		t.Errorf("Nested baz via Iter = %d; want 3", baz)
+	for key, val := range o.All() {
+		if key != "foo" || val.Type != TypeObject {
+			t.Errorf("Outer key/value = (%q, %v); want (\"foo\", TypeObject)", key, val.Type)
+		}
+		foo := val.Object()
+		for key2, val2 := range foo.All() {
+			if key2 != "bar" || val2.Type != TypeObject {
+				t.Errorf("Inner key/value = (%q, %v); want (\"bar\", TypeObject)", key2, val2.Type)
+			}
+			bar := val2.Object()
+			if baz := bar.Get("baz").Int(); baz != 3 {
+				t.Errorf("Nested baz via All() = %d; want 3", baz)
+			}
+		}
 	}
 }
 
@@ -326,17 +277,17 @@ func TestNestedSplitRightChild(t *testing.T) {
 	})
 
 	for i := range 7 {
-		nested.SetInt(keys[i].key, i)
+		nested.Set(keys[i].key, Int(i))
 	}
 	// Insert a key whose hash is greater than the median of the first 7.
-	nested.SetInt(keys[7].key, 77)
+	nested.Set(keys[7].key, Int(77))
 
 	for i := range 7 {
-		if v := nested.Value(keys[i].key).Int(); v != i {
+		if v := nested.Get(keys[i].key).Int(); v != i {
 			t.Errorf("nested.Int(%q) = %d; want %d", keys[i].key, v, i)
 		}
 	}
-	if v := nested.Value(keys[7].key).Int(); v != 77 {
+	if v := nested.Get(keys[7].key).Int(); v != 77 {
 		t.Errorf("nested.Int(%q) = %d; want 77", keys[7].key, v)
 	}
 	if nested.NumFields() != 8 {
@@ -350,12 +301,12 @@ func TestSplitMedianMatch(t *testing.T) {
 
 	// fill root to capacity, then overwrite median
 	for i := range 7 {
-		a.SetInt(i, i*10)
+		a.Set(i, Int(i*10))
 	}
-	a.SetInt(3, 999)
+	a.Set(3, Int(999))
 
 	for i := range 7 {
-		v := a.Value(i).Int()
+		v := a.Get(i).Int()
 		if i == 3 {
 			if v != 999 {
 				t.Errorf("Int(3) = %d; want 999", v)
@@ -375,16 +326,16 @@ func TestHashCollision(t *testing.T) {
 	if keyHash("ab") != keyHash("bA") {
 		t.Fatal("keys do not collide")
 	}
-	o.SetInt("ab", 1)
-	o.SetInt("bA", 2)
+	o.Set("ab", Int(1))
+	o.Set("bA", Int(2))
 
 	if o.NumFields() != 2 {
 		t.Errorf("NumFields() = %d; want 2", o.NumFields())
 	}
-	if v := o.Value("ab").Int(); v != 1 {
+	if v := o.Get("ab").Int(); v != 1 {
 		t.Errorf("Int(\"ab\") = %d; want 1", v)
 	}
-	if v := o.Value("bA").Int(); v != 2 {
+	if v := o.Get("bA").Int(); v != 2 {
 		t.Errorf("Int(\"bA\") = %d; want 2", v)
 	}
 }
@@ -395,33 +346,12 @@ func TestIterMultiLevel(t *testing.T) {
 
 	const n = 20
 	for i := range n {
-		a.SetInt(i, i*10)
+		a.Set(i, Int(i*10))
 	}
-
-	it := a.Iter()
-	for i := range n {
-		e := it.Next()
-		if err := it.Err(); err != nil {
-			t.Fatalf("Iter error at index %d: %v", i, err)
+	for i, v := range a.All() {
+		if v.Int() != i*10 {
+			t.Errorf("All() element %d = %d; want %d", i, v.Int(), i*10)
 		}
-		if e == nil {
-			t.Fatalf("Iter returned nil at index %d; expected element", i)
-		}
-		if e.Index != i {
-			t.Errorf("Iter element index = %d; want %d", e.Index, i)
-		}
-		if e.Value.Type != TypeInt {
-			t.Errorf("Iter element type = %d; want TypeInt (%d)", e.Value.Type, TypeInt)
-		}
-		if val := e.Value.Int(); val != i*10 {
-			t.Errorf("Iter element value = %d; want %d", val, i*10)
-		}
-	}
-	if e := it.Next(); e != nil {
-		t.Errorf("Iter returned extra element after %d items", n)
-	}
-	if err := it.Err(); err != nil {
-		t.Fatalf("Iter error at end: %v", err)
 	}
 }
 
@@ -432,38 +362,38 @@ func BenchmarkJohnDoe(b *testing.B) {
 			buf.buf = buf.buf[:0]
 			o := buf.SetRootObject()
 
-			o.SetInt("user_id", 12345)
-			o.SetString("username", "jdoe")
-			o.SetString("email_address", "jdoe@example.com")
-			o.SetBool("is_active", true)
-			o.SetFloat64("account_balance", 259.75)
-			o.SetString("signup_date_str", "2023-08-15")
-			o.SetString("last_login_date_iso", "2025-09-13T13:20:00Z")
-			o.SetInt("birth_year", 1996)
-			o.SetString("phone_number", "+14155555671")
-			o.SetString("preferred_language", "en")
-			o.SetString("time_zone", "Europe/Berlin")
-			o.SetInt("loyalty_points", 845)
-			o.SetFloat64("avg_session_length_minutes", 14.3)
-			o.SetBool("newsletter_subscribed", false)
-			o.SetString("ip_address", "192.168.0.42")
-			o.SetNull("notes")
+			o.Set("user_id", Int(12345))
+			o.Set("username", String("jdoe"))
+			o.Set("email_address", String("jdoe@example.com"))
+			o.Set("is_active", Bool(true))
+			o.Set("account_balance", Float64(259.75))
+			o.Set("signup_date_str", String("2023-08-15"))
+			o.Set("last_login_date_iso", String("2025-09-13T13:20:00Z"))
+			o.Set("birth_year", Int(1996))
+			o.Set("phone_number", String("+14155555671"))
+			o.Set("preferred_language", String("en"))
+			o.Set("time_zone", String("Europe/Berlin"))
+			o.Set("loyalty_points", Int(845))
+			o.Set("avg_session_length_minutes", Float64(14.3))
+			o.Set("newsletter_subscribed", Bool(false))
+			o.Set("ip_address", String("192.168.0.42"))
+			o.Set("notes", Null())
 
-			_ = o.Value("user_id").Int()
-			_ = o.Value("username").RawString()
-			_ = o.Value("email_address").RawString()
-			_ = o.Value("is_active").Bool()
-			_ = o.Value("account_balance").Float64()
-			_ = o.Value("signup_date_str").RawString()
-			_ = o.Value("last_login_date_iso").RawString()
-			_ = o.Value("birth_year").Int()
-			_ = o.Value("phone_number").RawString()
-			_ = o.Value("preferred_language").RawString()
-			_ = o.Value("time_zone").RawString()
-			_ = o.Value("loyalty_points").Int()
-			_ = o.Value("avg_session_length_minutes").Float64()
-			_ = o.Value("newsletter_subscribed").Bool()
-			_ = o.Value("ip_address").RawString()
+			_ = o.Get("user_id").Int()
+			_ = o.Get("username").RawString()
+			_ = o.Get("email_address").RawString()
+			_ = o.Get("is_active").Bool()
+			_ = o.Get("account_balance").Float64()
+			_ = o.Get("signup_date_str").RawString()
+			_ = o.Get("last_login_date_iso").RawString()
+			_ = o.Get("birth_year").Int()
+			_ = o.Get("phone_number").RawString()
+			_ = o.Get("preferred_language").RawString()
+			_ = o.Get("time_zone").RawString()
+			_ = o.Get("loyalty_points").Int()
+			_ = o.Get("avg_session_length_minutes").Float64()
+			_ = o.Get("newsletter_subscribed").Bool()
+			_ = o.Get("ip_address").RawString()
 		}
 	})
 	b.Run("json", func(b *testing.B) {

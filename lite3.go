@@ -303,7 +303,6 @@ func (c container) set(key string, keyHash uint32, valType uint8, val []byte) ui
 	}
 
 	try := func(h uint32) (uint32, bool) {
-		// Locate the node that should store h.
 		node := root
 		for {
 			if i, exists := node.slot(h); exists {
@@ -326,6 +325,7 @@ func (c container) set(key string, keyHash uint32, valType uint8, val []byte) ui
 				c.b.flushNode(&node)
 				return typOff, true
 			} else if !node.hasChildren() {
+				// Leaf node with capacity; insert here
 				kvOff, typOff := c.b.appendKV(key, valType, val)
 				node.insertKV(i, h, kvOff)
 				c.b.flushNode(&node)
@@ -335,11 +335,11 @@ func (c container) set(key string, keyHash uint32, valType uint8, val []byte) ui
 				c.b.flushNode(&root)
 				return typOff, true
 			} else {
-				if child := c.b.treeNode(node.childOff[i]); child.isFull() {
-					// we'll descend into the correct child on the next iteration
-					c.b.splitChild(&node, i)
-				} else {
+				// Descend into child (or split if full)
+				if child := c.b.treeNode(node.childOff[i]); !child.isFull() {
 					node = child
+				} else {
+					c.b.splitChild(&node, i) // we'll descend on next iteration
 				}
 			}
 		}
@@ -352,19 +352,28 @@ func (c container) set(key string, keyHash uint32, valType uint8, val []byte) ui
 	}
 }
 
-func (c container) count() int  { return int(c.b.treeNode(c.off).size) }
-func (c container) iter() *Iter { return newIter(c.b, c.b.treeNode(c.off)) }
+func (c container) count() int   { return int(c.b.treeNode(c.off).size) }
+func (c container) iter() *liter { return newLiter(c.b, c.b.treeNode(c.off)) }
 
 func (c container) value(key string, keyHash uint32) Value {
-	kv := c.get(key, keyHash)
-	if kv.typ == nil {
-		return Value{Type: TypeInvalid}
+	return c.get(key, keyHash).toValue(c.b)
+}
+
+func (c container) setValue(key string, keyHash uint32, val Value) {
+	if val.Type == TypeObject || val.Type == TypeArray {
+		panic("cannot set object or array value with setValue; use SetObject or SetArray instead")
 	}
-	return Value{
-		Type: *kv.typ,
-		data: kv.val,
-		c:    container{c.b, *kv.typ, kv.typOff},
+	var buf [8]byte
+	data := val.str
+	switch val.Type {
+	case TypeBool:
+		binary.LittleEndian.PutUint64(buf[:], val.num)
+		data = buf[:1]
+	case TypeInt, TypeFloat:
+		binary.LittleEndian.PutUint64(buf[:], val.num)
+		data = buf[:]
 	}
+	c.set(key, keyHash, val.Type, data)
 }
 
 func (c container) setContainer(key string, keyHash uint32, typ uint8) container {
@@ -373,44 +382,6 @@ func (c container) setContainer(key string, keyHash uint32, typ uint8) container
 		typ: typ,
 		off: c.set(key, keyHash, typ, make([]byte, nodeSize-1)),
 	}
-}
-
-func (c container) setNull(key string, keyHash uint32) {
-	c.set(key, keyHash, TypeNull, nil)
-}
-
-func (c container) setBool(key string, keyHash uint32, val bool) {
-	var v [1]byte
-	if val {
-		v[0] = 1
-	}
-	c.set(key, keyHash, TypeBool, v[:])
-}
-
-func (c container) setNumber(key string, keyHash uint32, typ uint8, val uint64) {
-	var buf [8]byte
-	binary.LittleEndian.PutUint64(buf[:], val)
-	c.set(key, keyHash, typ, buf[:])
-}
-
-func (c container) setInt(key string, keyHash uint32, val int) {
-	c.setNumber(key, keyHash, TypeInt, uint64(val))
-}
-
-func (c container) setFloat64(key string, keyHash uint32, val float64) {
-	c.setNumber(key, keyHash, TypeFloat, math.Float64bits(val))
-}
-
-func (c container) setTypedBytes(key string, keyHash uint32, typ uint8, val []byte) {
-	c.set(key, keyHash, typ, val)
-}
-
-func (c container) setBytes(key string, keyHash uint32, val []byte) {
-	c.setTypedBytes(key, keyHash, TypeBytes, val)
-}
-
-func (c container) setString(key string, keyHash uint32, val string) {
-	c.setTypedBytes(key, keyHash, TypeString, unsafeSlice(val))
 }
 
 func (c container) setObject(key string, keyHash uint32) Object {
@@ -425,22 +396,19 @@ type Object struct {
 	c container
 }
 
-func (o Object) NumFields() int                     { return o.c.count() }
-func (o Object) Iter() *Iter                        { return o.c.iter() }
-func (o Object) Value(key string) Value             { return o.c.value(key, keyHash(key)) }
-func (o Object) SetNull(key string)                 { o.c.setNull(key, keyHash(key)) }
-func (o Object) SetBool(key string, val bool)       { o.c.setBool(key, keyHash(key), val) }
-func (o Object) SetInt(key string, val int)         { o.c.setInt(key, keyHash(key), val) }
-func (o Object) SetFloat64(key string, val float64) { o.c.setFloat64(key, keyHash(key), val) }
-func (o Object) SetBytes(key string, val []byte)    { o.c.setBytes(key, keyHash(key), val) }
-func (o Object) SetString(key string, val string)   { o.c.setString(key, keyHash(key), val) }
-func (o Object) SetObject(key string) Object        { return o.c.setObject(key, keyHash(key)) }
-func (o Object) SetArray(key string) Array          { return o.c.setArray(key, keyHash(key)) }
+func (o Object) NumFields() int              { return o.c.count() }
+func (o Object) Get(key string) Value        { return o.c.value(key, keyHash(key)) }
+func (o Object) Set(key string, val Value)   { o.c.setValue(key, keyHash(key), val) }
+func (o Object) SetObject(key string) Object { return o.c.setObject(key, keyHash(key)) }
+func (o Object) SetArray(key string) Array   { return o.c.setArray(key, keyHash(key)) }
 func (o Object) All() iter.Seq2[string, Value] {
 	return func(yield func(string, Value) bool) {
-		it := o.Iter()
-		for elem := it.Next(); elem != nil; elem = it.Next() {
-			if !yield(elem.Key, elem.Value) {
+		it := o.c.iter()
+		var key string
+		var index int
+		var value Value
+		for it.Next(&key, &index, &value) {
+			if !yield(key, value) {
 				return
 			}
 		}
@@ -451,22 +419,62 @@ type Array struct {
 	c container
 }
 
-func (a Array) Len() int                      { return a.c.count() }
-func (a Array) Iter() *Iter                   { return a.c.iter() }
-func (a Array) Value(i int) Value             { return a.c.value("", uint32(i)) }
-func (a Array) SetNull(i int)                 { a.c.setNull("", uint32(i)) }
-func (a Array) SetBool(i int, val bool)       { a.c.setBool("", uint32(i), val) }
-func (a Array) SetInt(i int, val int)         { a.c.setInt("", uint32(i), val) }
-func (a Array) SetFloat64(i int, val float64) { a.c.setFloat64("", uint32(i), val) }
-func (a Array) SetBytes(i int, val []byte)    { a.c.setBytes("", uint32(i), val) }
-func (a Array) SetString(i int, val string)   { a.c.setString("", uint32(i), val) }
-func (a Array) SetObject(i int) Object        { return a.c.setObject("", uint32(i)) }
-func (a Array) SetArray(i int) Array          { return a.c.setArray("", uint32(i)) }
+func (a Array) Len() int               { return a.c.count() }
+func (a Array) Get(i int) Value        { return a.c.value("", uint32(i)) }
+func (a Array) Set(i int, val Value)   { a.c.setValue("", uint32(i), val) }
+func (a Array) SetObject(i int) Object { return a.c.setObject("", uint32(i)) }
+func (a Array) SetArray(i int) Array   { return a.c.setArray("", uint32(i)) }
+func (a Array) All() iter.Seq2[int, Value] {
+	return func(yield func(int, Value) bool) {
+		it := a.c.iter()
+		var key string
+		var index int
+		var value Value
+		for it.Next(&key, &index, &value) {
+			if !yield(index, value) {
+				return
+			}
+		}
+	}
+}
 
 type Value struct {
 	Type uint8
-	data []byte
+	num  uint64
+	str  []byte
 	c    container
+}
+
+func (kv keyVal) toValue(b *Buffer) Value {
+	if kv.typ == nil || *kv.typ == TypeInvalid {
+		return Value{Type: TypeInvalid}
+	}
+	switch *kv.typ {
+	case TypeNull:
+		return Value{Type: TypeNull}
+	case TypeBool:
+		return Value{
+			Type: TypeBool,
+			num:  uint64(kv.val[0]),
+		}
+	case TypeInt, TypeFloat:
+		return Value{
+			Type: *kv.typ,
+			num:  binary.LittleEndian.Uint64(kv.val),
+		}
+	case TypeString, TypeBytes:
+		return Value{
+			Type: *kv.typ,
+			str:  kv.val,
+		}
+	case TypeObject, TypeArray:
+		return Value{
+			Type: *kv.typ,
+			c:    container{b: b, typ: *kv.typ, off: kv.typOff},
+		}
+	default:
+		panic("unhandled type")
+	}
 }
 
 func (v Value) Any() any {
@@ -494,11 +502,11 @@ func (v Value) Any() any {
 	}
 }
 
-func (v Value) Bool() bool       { return v.data[0] != 0 }
-func (v Value) Uint64() uint64   { return binary.LittleEndian.Uint64(v.data) }
+func (v Value) Bool() bool       { return v.num != 0 }
+func (v Value) Uint64() uint64   { return v.num }
 func (v Value) Int() int         { return int(v.Uint64()) }
 func (v Value) Float64() float64 { return math.Float64frombits(v.Uint64()) }
-func (v Value) RawBytes() []byte { return v.data }
+func (v Value) RawBytes() []byte { return v.str }
 func (v Value) Bytes() []byte    { return slices.Clone(v.RawBytes()) }
 func (v Value) String() string {
 	switch v.Type {
@@ -517,13 +525,20 @@ func (v Value) RawString() string { return unsafeString(v.RawBytes()) }
 func (v Value) Object() Object    { return Object{c: v.c} }
 func (v Value) Array() Array      { return Array{c: v.c} }
 
-type IterElem struct {
-	Key   string
-	Index int
-	Value Value
+func Null() Value { return Value{Type: TypeNull} }
+func Bool(b bool) Value {
+	if b {
+		return Value{Type: TypeBool, num: 1}
+	}
+	return Value{Type: TypeBool, num: 0}
 }
+func Uint64(u uint64) Value   { return Value{Type: TypeInt, num: u} }
+func Int(i int) Value         { return Uint64(uint64(i)) }
+func Float64(f float64) Value { return Value{Type: TypeFloat, num: math.Float64bits(f)} }
+func Bytes(b []byte) Value    { return Value{Type: TypeBytes, str: b} }
+func String(s string) Value   { return Value{Type: TypeString, str: unsafeSlice(s)} }
 
-type Iter struct {
+type liter struct {
 	b         *Buffer
 	gen       uint32
 	nodeOffs  [10]uint32
@@ -532,8 +547,8 @@ type Iter struct {
 	err       error
 }
 
-func newIter(b *Buffer, node treeNode) *Iter {
-	it := &Iter{
+func newLiter(b *Buffer, node treeNode) *liter {
+	it := &liter{
 		b:   b,
 		gen: node.gen,
 	}
@@ -551,33 +566,31 @@ func newIter(b *Buffer, node treeNode) *Iter {
 	return it
 }
 
-func (it *Iter) Err() error {
-	return it.err
-}
-
-func (it *Iter) Next() *IterElem {
+func (it *liter) Next(key *string, index *int, value *Value) bool {
 	if it.err != nil {
-		return nil
+		return false
 	} else if it.gen != it.b.treeNode(it.nodeOffs[0]).gen {
-		return nil
+		return false
 	}
 	node := it.b.treeNode(it.nodeOffs[it.depth])
 	if !(node.typ == TypeObject || node.typ == TypeArray) {
 		it.err = errors.New("not an array or object type")
-		return nil
+		return false
 	} else if it.depth == 0 && it.nodeIndex[it.depth] == node.keyCount {
-		return nil
+		return false
 	}
 
 	kv := it.b.readKV(node.kvOff[it.nodeIndex[it.depth]], node.typ == TypeObject)
-	index := int(node.hashes[it.nodeIndex[it.depth]])
-	it.nodeIndex[it.depth]++
+	*key = unsafeString(kv.key)
+	*index = int(node.hashes[it.nodeIndex[it.depth]])
+	*value = kv.toValue(it.b)
 
+	it.nodeIndex[it.depth]++
 	for node.hasChildren() {
 		node = it.b.treeNode(node.childOff[it.nodeIndex[it.depth]])
 		if it.depth++; it.depth == uint8(len(it.nodeOffs)) {
 			it.err = errors.New("max depth exceeded")
-			return nil
+			return false
 		}
 		it.nodeOffs[it.depth] = node.off
 		it.nodeIndex[it.depth] = 0
@@ -586,15 +599,7 @@ func (it *Iter) Next() *IterElem {
 		it.depth--
 		node = it.b.treeNode(it.nodeOffs[it.depth])
 	}
-	return &IterElem{
-		Key:   unsafeString(kv.key),
-		Index: index,
-		Value: Value{
-			Type: *kv.typ,
-			data: kv.val,
-			c:    container{it.b, *kv.typ, kv.typOff},
-		},
-	}
+	return true
 }
 
 func (v Value) appendJSON(buf *bytes.Buffer) {
@@ -628,18 +633,21 @@ func (c container) appendJSON(buf *bytes.Buffer) {
 	}
 	it := c.iter()
 	first := true
-	for elem := it.Next(); elem != nil; elem = it.Next() {
+	var key string
+	var index int
+	var value Value
+	for it.Next(&key, &index, &value) {
 		if !first {
 			buf.WriteByte(',')
 		}
 		first = false
-		if elem.Key != "" {
+		if key != "" {
 			buf.WriteByte('"')
-			buf.WriteString(elem.Key)
+			buf.WriteString(key)
 			buf.WriteByte('"')
 			buf.WriteByte(':')
 		}
-		elem.Value.appendJSON(buf)
+		value.appendJSON(buf)
 	}
 	if c.typ == TypeArray {
 		buf.WriteByte(']')
@@ -683,25 +691,25 @@ func (c container) unmarshalJSON(dec *json.Decoder) error {
 				}
 			}
 		case string:
-			c.setString(key, hash, t)
+			c.setValue(key, hash, String(t))
 		case json.Number:
 			if strings.ContainsAny(t.String(), ".eE") {
 				f, err := t.Float64()
 				if err != nil {
 					return err
 				}
-				c.setFloat64(key, hash, f)
+				c.setValue(key, hash, Float64(f))
 			} else {
 				i, err := t.Int64()
 				if err != nil {
 					return err
 				}
-				c.setNumber(key, hash, TypeInt, uint64(i))
+				c.setValue(key, hash, Uint64(uint64(i)))
 			}
 		case bool:
-			c.setBool(key, hash, t)
+			c.setValue(key, hash, Bool(t))
 		case nil:
-			c.setNull(key, hash)
+			c.setValue(key, hash, Null())
 		default:
 			panic("unhandled JSON token type:" + fmt.Sprint(t))
 		}
