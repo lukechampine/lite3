@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,19 @@ func TestBasic(t *testing.T) {
 	}
 	if val := a.Value(1).String(); val != "world" {
 		t.Errorf(`Index(1).String() = %q; want "world"`, val)
+	}
+}
+
+func TestKeyNotFound(t *testing.T) {
+	b := New(nil)
+	o := b.SetRootObject()
+	if v := o.Value("foo"); v.Type != TypeInvalid {
+		t.Errorf("Expected invalid Value for missing key; got %v", v)
+	}
+	a := b.SetRootArray()
+	a.SetBool(0, true)
+	if v := a.Value(1); v.Type != TypeInvalid {
+		t.Errorf("Expected invalid Value for missing element; got %v", v)
 	}
 }
 
@@ -66,6 +80,27 @@ func TestIter(t *testing.T) {
 		t.Fatalf("Expected Iter Next to return nil at end of buffer")
 	} else if err := it.Err(); err != nil {
 		t.Fatal(err)
+	}
+
+	var s strings.Builder
+	for key, val := range o.All() {
+		fmt.Fprintf(&s, "%s=%v;", key, val)
+	}
+	if exp := "lap=55;time_sec=88.427;username=jdoe;"; s.String() != exp {
+		t.Errorf("Object All() = %q; want %q", s.String(), exp)
+	}
+
+	a := b.SetRootArray()
+	a.SetInt(0, 10)
+	a.SetInt(1, 20)
+	a.SetInt(2, 30)
+
+	var x int
+	for i, val := range a.All() {
+		x += (i + 1) * val.Int()
+	}
+	if x != 140 {
+		t.Errorf("Array All() computed value = %d; want 140", x)
 	}
 }
 
@@ -196,6 +231,31 @@ func TestOverwrite(t *testing.T) {
 		if excess[i] != 0 {
 			t.Errorf("Old value not zeroed")
 		}
+	}
+}
+
+func TestOverwriteContainerUnaligned(t *testing.T) {
+	b := New(nil)
+	o := b.SetRootObject()
+
+	payload := make([]byte, nodeSize-1)
+	o.SetBytes("k", payload)
+	before := o.Value("k").c.off
+	if before%4 == 0 {
+		t.Fatalf("expected unaligned KV offset before overwrite; got %d", before)
+	}
+
+	obj := o.SetObject("k")
+	if obj.c.off != before {
+		t.Fatalf("overwrite did not reuse KV offset: got %d want %d", obj.c.off, before)
+	}
+	if obj.c.off%4 == 0 {
+		t.Fatalf("container offset = %d; want unaligned (mod 4 != 0)", obj.c.off)
+	}
+
+	obj.SetInt("x", 1)
+	if v := o.Value("k").Object().Value("x").Int(); v != 1 {
+		t.Fatalf("nested value = %d; want 1", v)
 	}
 }
 

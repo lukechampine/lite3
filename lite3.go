@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"math"
 	"slices"
 	"strconv"
@@ -238,7 +239,7 @@ func (c container) get(key string, keyHash uint32) keyVal {
 				}
 				return kv, true
 			} else if !node.hasChildren() {
-				panic("key not found: " + key)
+				return keyVal{}, true // not found
 			}
 			node = c.b.treeNode(node.childOff[i])
 		}
@@ -356,6 +357,9 @@ func (c container) iter() *Iter { return newIter(c.b, c.b.treeNode(c.off)) }
 
 func (c container) value(key string, keyHash uint32) Value {
 	kv := c.get(key, keyHash)
+	if kv.typ == nil {
+		return Value{Type: TypeInvalid}
+	}
 	return Value{
 		Type: *kv.typ,
 		data: kv.val,
@@ -432,6 +436,16 @@ func (o Object) SetBytes(key string, val []byte)    { o.c.setBytes(key, keyHash(
 func (o Object) SetString(key string, val string)   { o.c.setString(key, keyHash(key), val) }
 func (o Object) SetObject(key string) Object        { return o.c.setObject(key, keyHash(key)) }
 func (o Object) SetArray(key string) Array          { return o.c.setArray(key, keyHash(key)) }
+func (o Object) All() iter.Seq2[string, Value] {
+	return func(yield func(string, Value) bool) {
+		it := o.Iter()
+		for elem := it.Next(); elem != nil; elem = it.Next() {
+			if !yield(elem.Key, elem.Value) {
+				return
+			}
+		}
+	}
+}
 
 type Array struct {
 	c container
@@ -473,6 +487,8 @@ func (v Value) Any() any {
 		return v.Object()
 	case TypeArray:
 		return v.Array()
+	case TypeInvalid:
+		panic("invalid")
 	default:
 		panic("unhandled type")
 	}
@@ -492,6 +508,8 @@ func (v Value) String() string {
 		return "<object>"
 	case TypeArray:
 		return "<array>"
+	case TypeInvalid:
+		return "<invalid>"
 	}
 	return fmt.Sprint(v.Any())
 }
