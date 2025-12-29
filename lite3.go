@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"slices"
@@ -366,7 +367,7 @@ func (c container) setContainer(key string, keyHash uint32, typ uint8) container
 	return container{
 		b:   c.b,
 		typ: typ,
-		off: c.set(key, keyHash, TypeObject, make([]byte, nodeSize-1)),
+		off: c.set(key, keyHash, typ, make([]byte, nodeSize-1)),
 	}
 }
 
@@ -477,13 +478,23 @@ func (v Value) Any() any {
 	}
 }
 
-func (v Value) Bool() bool        { return v.data[0] != 0 }
-func (v Value) Uint64() uint64    { return binary.LittleEndian.Uint64(v.data) }
-func (v Value) Int() int          { return int(v.Uint64()) }
-func (v Value) Float64() float64  { return math.Float64frombits(v.Uint64()) }
-func (v Value) RawBytes() []byte  { return v.data }
-func (v Value) Bytes() []byte     { return slices.Clone(v.RawBytes()) }
-func (v Value) String() string    { return string(v.RawBytes()) }
+func (v Value) Bool() bool       { return v.data[0] != 0 }
+func (v Value) Uint64() uint64   { return binary.LittleEndian.Uint64(v.data) }
+func (v Value) Int() int         { return int(v.Uint64()) }
+func (v Value) Float64() float64 { return math.Float64frombits(v.Uint64()) }
+func (v Value) RawBytes() []byte { return v.data }
+func (v Value) Bytes() []byte    { return slices.Clone(v.RawBytes()) }
+func (v Value) String() string {
+	switch v.Type {
+	case TypeString:
+		return string(v.RawBytes())
+	case TypeObject:
+		return "<object>"
+	case TypeArray:
+		return "<array>"
+	}
+	return fmt.Sprint(v.Any())
+}
 func (v Value) RawString() string { return unsafeString(v.RawBytes()) }
 func (v Value) Object() Object    { return Object{c: v.c} }
 func (v Value) Array() Array      { return Array{c: v.c} }
@@ -592,7 +603,11 @@ func (v Value) appendJSON(buf *bytes.Buffer) {
 }
 
 func (c container) appendJSON(buf *bytes.Buffer) {
-	buf.WriteByte('{')
+	if c.typ == TypeArray {
+		buf.WriteByte('[')
+	} else {
+		buf.WriteByte('{')
+	}
 	it := c.iter()
 	first := true
 	for elem := it.Next(); elem != nil; elem = it.Next() {
@@ -608,7 +623,11 @@ func (c container) appendJSON(buf *bytes.Buffer) {
 		}
 		elem.Value.appendJSON(buf)
 	}
-	buf.WriteByte('}')
+	if c.typ == TypeArray {
+		buf.WriteByte(']')
+	} else {
+		buf.WriteByte('}')
+	}
 }
 
 func (c container) unmarshalJSON(dec *json.Decoder) error {
@@ -633,6 +652,18 @@ func (c container) unmarshalJSON(dec *json.Decoder) error {
 		}
 
 		switch t := t.(type) {
+		case json.Delim:
+			if t == json.Delim('{') {
+				child := c.setObject(key, uint32(hash))
+				if err := child.c.unmarshalJSON(dec); err != nil {
+					return err
+				}
+			} else {
+				child := c.setArray(key, uint32(hash))
+				if err := child.c.unmarshalJSON(dec); err != nil {
+					return err
+				}
+			}
 		case string:
 			c.setString(key, hash, t)
 		case json.Number:
@@ -654,7 +685,7 @@ func (c container) unmarshalJSON(dec *json.Decoder) error {
 		case nil:
 			c.setNull(key, hash)
 		default:
-			panic("unhandled JSON token type")
+			panic("unhandled JSON token type:" + fmt.Sprint(t))
 		}
 	}
 }

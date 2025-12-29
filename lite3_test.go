@@ -9,6 +9,26 @@ import (
 	"testing"
 )
 
+func TestNestedArrayIter(t *testing.T) {
+	b := New(nil)
+	o := b.SetRootObject()
+	o.SetBool("foo", true)
+
+	// nested containers:
+	a := o.SetArray("bar")
+	a.SetString(0, "hello")
+	a.SetString(1, "world")
+
+	js, _ := b.MarshalJSON()
+	println(string(js)) // {"bar":["hello","world"],"foo":true}
+
+	var b2 Buffer
+	b2.UnmarshalJSON(js)
+	println(b2.Root().(Object).Value("foo").String()) // true
+
+	t.FailNow()
+}
+
 func TestBasic(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
@@ -366,42 +386,85 @@ func TestIterMultiLevel(t *testing.T) {
 }
 
 func BenchmarkJohnDoe(b *testing.B) {
-	buf := New(make([]byte, 0, 2048))
-	for b.Loop() {
-		buf.buf = buf.buf[:0]
-		o := buf.SetRootObject()
+	b.Run("lite3", func(b *testing.B) {
+		buf := New(make([]byte, 0, 2048))
+		for b.Loop() {
+			buf.buf = buf.buf[:0]
+			o := buf.SetRootObject()
 
-		o.SetInt("user_id", 12345)
-		o.SetString("username", "jdoe")
-		o.SetString("email_address", "jdoe@example.com")
-		o.SetBool("is_active", true)
-		o.SetFloat64("account_balance", 259.75)
-		o.SetString("signup_date_str", "2023-08-15")
-		o.SetString("last_login_date_iso", "2025-09-13T13:20:00Z")
-		o.SetInt("birth_year", 1996)
-		o.SetString("phone_number", "+14155555671")
-		o.SetString("preferred_language", "en")
-		o.SetString("time_zone", "Europe/Berlin")
-		o.SetInt("loyalty_points", 845)
-		o.SetFloat64("avg_session_length_minutes", 14.3)
-		o.SetBool("newsletter_subscribed", false)
-		o.SetString("ip_address", "192.168.0.42")
-		o.SetNull("notes")
+			o.SetInt("user_id", 12345)
+			o.SetString("username", "jdoe")
+			o.SetString("email_address", "jdoe@example.com")
+			o.SetBool("is_active", true)
+			o.SetFloat64("account_balance", 259.75)
+			o.SetString("signup_date_str", "2023-08-15")
+			o.SetString("last_login_date_iso", "2025-09-13T13:20:00Z")
+			o.SetInt("birth_year", 1996)
+			o.SetString("phone_number", "+14155555671")
+			o.SetString("preferred_language", "en")
+			o.SetString("time_zone", "Europe/Berlin")
+			o.SetInt("loyalty_points", 845)
+			o.SetFloat64("avg_session_length_minutes", 14.3)
+			o.SetBool("newsletter_subscribed", false)
+			o.SetString("ip_address", "192.168.0.42")
+			o.SetNull("notes")
 
-		_ = o.Value("user_id").Int()
-		_ = o.Value("username").RawString()
-		_ = o.Value("email_address").RawString()
-		_ = o.Value("is_active").Bool()
-		_ = o.Value("account_balance").Float64()
-		_ = o.Value("signup_date_str").RawString()
-		_ = o.Value("last_login_date_iso").RawString()
-		_ = o.Value("birth_year").Int()
-		_ = o.Value("phone_number").RawString()
-		_ = o.Value("preferred_language").RawString()
-		_ = o.Value("time_zone").RawString()
-		_ = o.Value("loyalty_points").Int()
-		_ = o.Value("avg_session_length_minutes").Float64()
-		_ = o.Value("newsletter_subscribed").Bool()
-		_ = o.Value("ip_address").RawString()
-	}
+			_ = o.Value("user_id").Int()
+			_ = o.Value("username").RawString()
+			_ = o.Value("email_address").RawString()
+			_ = o.Value("is_active").Bool()
+			_ = o.Value("account_balance").Float64()
+			_ = o.Value("signup_date_str").RawString()
+			_ = o.Value("last_login_date_iso").RawString()
+			_ = o.Value("birth_year").Int()
+			_ = o.Value("phone_number").RawString()
+			_ = o.Value("preferred_language").RawString()
+			_ = o.Value("time_zone").RawString()
+			_ = o.Value("loyalty_points").Int()
+			_ = o.Value("avg_session_length_minutes").Float64()
+			_ = o.Value("newsletter_subscribed").Bool()
+			_ = o.Value("ip_address").RawString()
+		}
+	})
+	b.Run("json", func(b *testing.B) {
+		var johnDoe = struct {
+			UserID                  int     `json:"user_id"`
+			Username                string  `json:"username"`
+			EmailAddress            string  `json:"email_address"`
+			IsActive                bool    `json:"is_active"`
+			AccountBalance          float64 `json:"account_balance"`
+			SignupDateStr           string  `json:"signup_date_str"`
+			LastLoginDateISO        string  `json:"last_login_date_iso"`
+			BirthYear               int     `json:"birth_year"`
+			PhoneNumber             string  `json:"phone_number"`
+			PreferredLanguage       string  `json:"preferred_language"`
+			TimeZone                string  `json:"time_zone"`
+			LoyaltyPoints           int     `json:"loyalty_points"`
+			AvgSessionLengthMinutes float64 `json:"avg_session_length_minutes"`
+			NewsletterSubscribed    bool    `json:"newsletter_subscribed"`
+			IPAddress               string  `json:"ip_address"`
+			Notes                   *string `json:"notes"`
+		}{
+			UserID:                  12345,
+			Username:                "jdoe",
+			EmailAddress:            "jdoe@example.com",
+			IsActive:                true,
+			AccountBalance:          259.75,
+			SignupDateStr:           "2023-08-15",
+			LastLoginDateISO:        "2025-09-13T13:20:00Z",
+			BirthYear:               1996,
+			PhoneNumber:             "+14155555671",
+			PreferredLanguage:       "en",
+			TimeZone:                "Europe/Berlin",
+			LoyaltyPoints:           845,
+			AvgSessionLengthMinutes: 14.3,
+			NewsletterSubscribed:    false,
+			IPAddress:               "192.168.0.42",
+			Notes:                   nil,
+		}
+		for b.Loop() {
+			js, _ := json.Marshal(johnDoe)
+			json.Unmarshal(js, &johnDoe)
+		}
+	})
 }
