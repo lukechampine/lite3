@@ -132,7 +132,7 @@ func (node *treeNode) hasChildren() bool {
 	return node.childOff[0] != 0
 }
 
-func (node *treeNode) slot(hash uint32) (i uint8, exact bool) {
+func (node *treeNode) slot(hash uint32) (i uint8, exists bool) {
 	for i < node.keyCount && node.hashes[i] < hash {
 		i++
 	}
@@ -229,8 +229,8 @@ func (c container) get(key string, keyHash uint32) keyVal {
 	try := func(h uint32) (keyVal, bool) {
 		node := c.b.treeNode(c.off)
 		for {
-			i, exact := node.slot(h)
-			if exact {
+			i, exists := node.slot(h)
+			if exists {
 				kv := c.b.readKV(node.kvOff[i], key != "")
 				if key != "" && string(kv.key) != key {
 					return keyVal{}, false
@@ -304,7 +304,7 @@ func (c container) set(key string, keyHash uint32, valType uint8, val []byte) ui
 		// Locate the node that should store h.
 		node := root
 		for {
-			if i, exact := node.slot(h); exact {
+			if i, exists := node.slot(h); exists {
 				cur := c.b.readKV(node.kvOff[i], node.typ == TypeObject)
 				if string(cur.key) != key {
 					return 0, false // collision
@@ -353,23 +353,20 @@ func (c container) set(key string, keyHash uint32, valType uint8, val []byte) ui
 func (c container) count() int  { return int(c.b.treeNode(c.off).size) }
 func (c container) iter() *Iter { return newIter(c.b, c.b.treeNode(c.off)) }
 
+func (c container) value(key string, keyHash uint32) Value {
+	kv := c.get(key, keyHash)
+	return Value{
+		Type: *kv.typ,
+		data: kv.val,
+		c:    container{c.b, *kv.typ, kv.typOff},
+	}
+}
+
 func (c container) setContainer(key string, keyHash uint32, typ uint8) container {
 	return container{
 		b:   c.b,
 		typ: typ,
 		off: c.set(key, keyHash, TypeObject, make([]byte, nodeSize-1)),
-	}
-}
-
-func (c container) container(key string, keyHash uint32, exp uint8) container {
-	kv := c.get(key, keyHash)
-	if *kv.typ != exp {
-		panic("type mismatch")
-	}
-	return container{
-		b:   c.b,
-		typ: *kv.typ,
-		off: kv.typOff,
 	}
 }
 
@@ -385,85 +382,38 @@ func (c container) setBool(key string, keyHash uint32, val bool) {
 	c.set(key, keyHash, TypeBool, v[:])
 }
 
-func (c container) bool(key string, keyHash uint32) bool {
-	kv := c.get(key, keyHash)
-	return kv.val[0] != 0
-}
-
 func (c container) setNumber(key string, keyHash uint32, typ uint8, val uint64) {
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], val)
 	c.set(key, keyHash, typ, buf[:])
 }
 
-func (c container) number(key string, keyHash uint32, exp uint8) uint64 {
-	kv := c.get(key, keyHash)
-	return binary.LittleEndian.Uint64(kv.val)
-}
-
 func (c container) setInt(key string, keyHash uint32, val int) {
 	c.setNumber(key, keyHash, TypeInt, uint64(val))
-}
-
-func (c container) int(key string, keyHash uint32) int {
-	return int(c.number(key, keyHash, TypeInt))
 }
 
 func (c container) setFloat64(key string, keyHash uint32, val float64) {
 	c.setNumber(key, keyHash, TypeFloat, math.Float64bits(val))
 }
 
-func (c container) float64(key string, keyHash uint32) float64 {
-	return math.Float64frombits(c.number(key, keyHash, TypeFloat))
-}
-
 func (c container) setTypedBytes(key string, keyHash uint32, typ uint8, val []byte) {
 	c.set(key, keyHash, typ, val)
-}
-
-func (c container) typedBytes(key string, keyHash uint32, exp uint8) []byte {
-	kv := c.get(key, keyHash)
-	return kv.val
 }
 
 func (c container) setBytes(key string, keyHash uint32, val []byte) {
 	c.setTypedBytes(key, keyHash, TypeBytes, val)
 }
 
-func (c container) bytes(key string, keyHash uint32) []byte {
-	return slices.Clone(c.rawBytes(key, keyHash))
-}
-
-func (c container) rawBytes(key string, keyHash uint32) []byte {
-	return c.typedBytes(key, keyHash, TypeBytes)
-}
-
 func (c container) setString(key string, keyHash uint32, val string) {
 	c.setTypedBytes(key, keyHash, TypeString, unsafeSlice(val))
-}
-
-func (c container) string(key string, keyHash uint32) string {
-	return string(c.typedBytes(key, keyHash, TypeString))
-}
-
-func (c container) rawString(key string, keyHash uint32) string {
-	return unsafeString(c.typedBytes(key, keyHash, TypeString))
 }
 
 func (c container) setObject(key string, keyHash uint32) Object {
 	return Object{c.setContainer(key, keyHash, TypeObject)}
 }
 
-func (c container) object(key string, keyHash uint32) Object {
-	return Object{c.container(key, keyHash, TypeObject)}
-}
-
 func (c container) setArray(key string, keyHash uint32) Array {
 	return Array{c.setContainer(key, keyHash, TypeArray)}
-}
-
-func (c container) array(key string, keyHash uint32) Array {
-	return Array{c.container(key, keyHash, TypeArray)}
 }
 
 type Object struct {
@@ -472,23 +422,15 @@ type Object struct {
 
 func (o Object) NumFields() int                     { return o.c.count() }
 func (o Object) Iter() *Iter                        { return o.c.iter() }
+func (o Object) Value(key string) Value             { return o.c.value(key, keyHash(key)) }
 func (o Object) SetNull(key string)                 { o.c.setNull(key, keyHash(key)) }
 func (o Object) SetBool(key string, val bool)       { o.c.setBool(key, keyHash(key), val) }
-func (o Object) Bool(key string) bool               { return o.c.bool(key, keyHash(key)) }
 func (o Object) SetInt(key string, val int)         { o.c.setInt(key, keyHash(key), val) }
-func (o Object) Int(key string) int                 { return o.c.int(key, keyHash(key)) }
 func (o Object) SetFloat64(key string, val float64) { o.c.setFloat64(key, keyHash(key), val) }
-func (o Object) Float64(key string) float64         { return o.c.float64(key, keyHash(key)) }
 func (o Object) SetBytes(key string, val []byte)    { o.c.setBytes(key, keyHash(key), val) }
-func (o Object) Bytes(key string) []byte            { return o.c.bytes(key, keyHash(key)) }
-func (o Object) RawBytes(key string) []byte         { return o.c.rawBytes(key, keyHash(key)) }
 func (o Object) SetString(key string, val string)   { o.c.setString(key, keyHash(key), val) }
-func (o Object) String(key string) string           { return o.c.string(key, keyHash(key)) }
-func (o Object) RawString(key string) string        { return o.c.rawString(key, keyHash(key)) }
 func (o Object) SetObject(key string) Object        { return o.c.setObject(key, keyHash(key)) }
-func (o Object) Object(key string) Object           { return o.c.object(key, keyHash(key)) }
 func (o Object) SetArray(key string) Array          { return o.c.setArray(key, keyHash(key)) }
-func (o Object) Array(key string) Array             { return o.c.array(key, keyHash(key)) }
 
 type Array struct {
 	c container
@@ -496,23 +438,15 @@ type Array struct {
 
 func (a Array) Len() int                      { return a.c.count() }
 func (a Array) Iter() *Iter                   { return a.c.iter() }
+func (a Array) Value(i int) Value             { return a.c.value("", uint32(i)) }
 func (a Array) SetNull(i int)                 { a.c.setNull("", uint32(i)) }
 func (a Array) SetBool(i int, val bool)       { a.c.setBool("", uint32(i), val) }
-func (a Array) Bool(i int) bool               { return a.c.bool("", uint32(i)) }
 func (a Array) SetInt(i int, val int)         { a.c.setInt("", uint32(i), val) }
-func (a Array) Int(i int) int                 { return a.c.int("", uint32(i)) }
 func (a Array) SetFloat64(i int, val float64) { a.c.setFloat64("", uint32(i), val) }
-func (a Array) Float64(i int) float64         { return a.c.float64("", uint32(i)) }
 func (a Array) SetBytes(i int, val []byte)    { a.c.setBytes("", uint32(i), val) }
-func (a Array) Bytes(i int) []byte            { return a.c.bytes("", uint32(i)) }
-func (a Array) RawBytes(i int) []byte         { return a.c.rawBytes("", uint32(i)) }
 func (a Array) SetString(i int, val string)   { a.c.setString("", uint32(i), val) }
-func (a Array) String(i int) string           { return a.c.string("", uint32(i)) }
-func (a Array) RawString(i int) string        { return a.c.rawString("", uint32(i)) }
 func (a Array) SetObject(i int) Object        { return a.c.setObject("", uint32(i)) }
-func (a Array) Object(i int) Object           { return a.c.object("", uint32(i)) }
 func (a Array) SetArray(i int) Array          { return a.c.setArray("", uint32(i)) }
-func (a Array) Array(i int) Array             { return a.c.array("", uint32(i)) }
 
 type Value struct {
 	Type uint8
