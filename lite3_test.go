@@ -9,26 +9,6 @@ import (
 	"testing"
 )
 
-func TestNestedArrayIter(t *testing.T) {
-	b := New(nil)
-	o := b.SetRootObject()
-	o.SetBool("foo", true)
-
-	// nested containers:
-	a := o.SetArray("bar")
-	a.SetString(0, "hello")
-	a.SetString(1, "world")
-
-	js, _ := b.MarshalJSON()
-	println(string(js)) // {"bar":["hello","world"],"foo":true}
-
-	var b2 Buffer
-	b2.UnmarshalJSON(js)
-	println(b2.Root().(Object).Value("foo").String()) // true
-
-	t.FailNow()
-}
-
 func TestBasic(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
