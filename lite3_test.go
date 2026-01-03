@@ -10,20 +10,6 @@ import (
 	"testing"
 )
 
-// panics -> errors or bools
-// jq-style Path(...)
-// fuzzing/hardening against untrusted buffers
-
-// feedback:
-// - ditch generation system
-//   - maybe not; could be used to cache nodes in container?
-// - ditch C strings
-// - splitting should reset left child's gen to 0
-//   - maybe set typ too?
-// - treeNodes can be unaligned if inserted in-place
-
-// treeNode and treeNodePtr; keyVal and keyValPtr
-
 func TestBasic(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
@@ -370,10 +356,9 @@ func TestIterMultiLevel(t *testing.T) {
 }
 
 func BenchmarkJohnDoe(b *testing.B) {
-	b.Run("lite3", func(b *testing.B) {
+	b.Run("Lite3", func(b *testing.B) {
 		buf := New(make([]byte, 0, 2048))
 		for b.Loop() {
-			buf.buf = buf.buf[:0]
 			o := buf.SetRootObject()
 
 			o.Set("user_id", Int(12345))
@@ -410,7 +395,7 @@ func BenchmarkJohnDoe(b *testing.B) {
 			_ = o.Get("ip_address").RawString()
 		}
 	})
-	b.Run("json", func(b *testing.B) {
+	b.Run("JSON", func(b *testing.B) {
 		var johnDoe = struct {
 			UserID                  int     `json:"user_id"`
 			Username                string  `json:"username"`
