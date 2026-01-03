@@ -370,10 +370,9 @@ func TestIterMultiLevel(t *testing.T) {
 }
 
 func BenchmarkJohnDoe(b *testing.B) {
-	b.Run("lite3", func(b *testing.B) {
+	b.Run("Lite3", func(b *testing.B) {
 		buf := New(make([]byte, 0, 2048))
 		for b.Loop() {
-			buf.buf = buf.buf[:0]
 			o := buf.SetRootObject()
 
 			o.Set("user_id", Int(12345))
@@ -410,7 +409,7 @@ func BenchmarkJohnDoe(b *testing.B) {
 			_ = o.Get("ip_address").RawString()
 		}
 	})
-	b.Run("json", func(b *testing.B) {
+	b.Run("JSON", func(b *testing.B) {
 		var johnDoe = struct {
 			UserID                  int     `json:"user_id"`
 			Username                string  `json:"username"`

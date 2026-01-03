@@ -164,7 +164,7 @@ func (b *Buffer) readKV(off uint32, hasKey bool) (kv keyVal) {
 	buf := b.buf[off:]
 	if hasKey {
 		tagSize := uint32(buf[0]&3) + 1
-		keySize := binary.LittleEndian.Uint32(buf) & ((1 << 8 * tagSize) - 1) >> 2
+		keySize := binary.LittleEndian.Uint32(buf) & ((1 << (8 * tagSize)) - 1) >> 2
 		kv.key = buf[tagSize:][:keySize-1] // exclude C string terminator
 		kv.typOff = tagSize + keySize
 		buf = buf[tagSize+keySize:]
