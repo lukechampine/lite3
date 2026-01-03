@@ -16,7 +16,8 @@ in `O(log n)` time.
 
 The API is fairly low-level. There are two container types: `Object` and
 `Array`, which each have `Get` and `Set` methods for reading and writing `Value`
-objects.
+objects. Object keys are hashed; hence the `Key` constructor, whose result can
+be stored to boost performance when accessing the same key many times.
 
 ```go
 import "lukechampine.com/lite3"
@@ -26,10 +27,10 @@ func main() {
     b := lite3.New(nil)
     o := b.SetRootObject()
 	o.Set("foo", lite3.Bool(true))
-    fmt.Println(o.Value("foo").Bool()) // true
+    fmt.Println(o.Value(lite3.Key("foo")).Bool()) // true
     
     // nested containers:
-    a := o.SetArray("bar")
+    a := o.SetArray(lite3.Key("bar"))
     a.Set(0, lite3.String("hello"))
     a.Set(1, lite3.String("world"))
 
@@ -51,12 +52,11 @@ func main() {
     
     var b2 lite3.Buffer
     b2.UnmarshalJSON(js)
-    fmt.Println(b2.Root().(lite3.Object).Value("foo")) // true
+    fmt.Println(b2.Root().(lite3.Object).Value(lite3.Key("foo"))) // true
 }
 ```
 
 ## Performance
 
-...is currently underwhelming, because this implementation skews more towards
-explicit encoding/decoding than unsafe casting. Should be possible to make it
-much faster by assuming little-endian architecture.
+~2x slower than json.Marshal when encoding, but ~3x faster when decoding.
+Individual `Get`/`Set` operations are ~20ns.

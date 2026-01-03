@@ -14,9 +14,9 @@ func TestBasic(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
 
-	o.Set("foo", Bool(true))
-	if val := o.Get("foo").Bool(); val != true {
-		t.Errorf(`Object.Bool("foo") = %v; want true`, val)
+	o.Set(Key("foo"), Bool(true))
+	if val := o.Get(Key("foo")).Bool(); val != true {
+		t.Errorf(`Object.Bool(Key("foo")) = %v; want true`, val)
 	}
 
 	a := b.SetRootArray()
@@ -33,7 +33,7 @@ func TestBasic(t *testing.T) {
 func TestKeyNotFound(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
-	if v := o.Get("foo"); v.Type != TypeInvalid {
+	if v := o.Get(Key("foo")); v.Type != TypeInvalid {
 		t.Errorf("Expected invalid Value for missing key; got %v", v)
 	}
 	a := b.SetRootArray()
@@ -47,9 +47,9 @@ func TestIter(t *testing.T) {
 	b := New(nil)
 
 	o := b.SetRootObject()
-	o.Set("lap", Int(55))
-	o.Set("time_sec", Float64(88.427))
-	o.Set("username", String("jdoe"))
+	o.Set(Key("lap"), Int(55))
+	o.Set(Key("time_sec"), Float64(88.427))
+	o.Set(Key("username"), String("jdoe"))
 
 	var s strings.Builder
 	for key, val := range o.All() {
@@ -76,9 +76,9 @@ func TestIter(t *testing.T) {
 func TestJSON(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
-	o.Set("event", String("lap_complete"))
-	o.Set("lap", Int(56))
-	o.Set("time_sec", Float64(88.427))
+	o.Set(Key("event"), String("lap_complete"))
+	o.Set(Key("lap"), Int(56))
+	o.Set(Key("time_sec"), Float64(88.427))
 
 	js, _ := json.Marshal(b)
 	if string(js) != `{"lap":56,"event":"lap_complete","time_sec":88.427}` {
@@ -90,13 +90,13 @@ func TestJSON(t *testing.T) {
 		t.Fatalf("Unmarshal error: %v", err)
 	}
 	o2 := b2.Root().(Object)
-	if lap := o2.Get("lap").Int(); lap != 56 {
+	if lap := o2.Get(Key("lap")).Int(); lap != 56 {
 		t.Errorf("Unmarshaled lap = %d; want 56", lap)
 	}
-	if event := o2.Get("event").String(); event != "lap_complete" {
+	if event := o2.Get(Key("event")).String(); event != "lap_complete" {
 		t.Errorf("Unmarshaled event = %q; want \"lap_complete\"", event)
 	}
-	if timeSec := o2.Get("time_sec").Float64(); timeSec != 88.427 {
+	if timeSec := o2.Get(Key("time_sec")).Float64(); timeSec != 88.427 {
 		t.Errorf("Unmarshaled time_sec = %f; want 88.427", timeSec)
 	}
 }
@@ -105,44 +105,44 @@ func TestJohnDoe(t *testing.T) {
 	b := New(make([]byte, 0, 2048))
 	o := b.SetRootObject()
 
-	o.Set("user_id", Int(12345))
-	o.Set("username", String("jdoe"))
-	o.Set("email_address", String("jdoe@example.com"))
-	o.Set("is_active", Bool(true))
-	o.Set("account_balance", Float64(259.75))
-	o.Set("signup_date_str", String("2023-08-15"))
-	o.Set("last_login_date_iso", String("2025-09-13T13:20:00Z"))
-	o.Set("birth_year", Int(1996))
-	o.Set("phone_number", String("+14155555671"))
-	o.Set("preferred_language", String("en"))
-	o.Set("time_zone", String("Europe/Berlin"))
-	o.Set("loyalty_points", Int(845))
-	o.Set("avg_session_length_minutes", Float64(14.3))
-	o.Set("newsletter_subscribed", Bool(false))
-	o.Set("ip_address", String("192.168.0.42"))
-	o.Set("notes", Null())
+	o.Set(Key("user_id"), Int(12345))
+	o.Set(Key("username"), String("jdoe"))
+	o.Set(Key("email_address"), String("jdoe@example.com"))
+	o.Set(Key("is_active"), Bool(true))
+	o.Set(Key("account_balance"), Float64(259.75))
+	o.Set(Key("signup_date_str"), String("2023-08-15"))
+	o.Set(Key("last_login_date_iso"), String("2025-09-13T13:20:00Z"))
+	o.Set(Key("birth_year"), Int(1996))
+	o.Set(Key("phone_number"), String("+14155555671"))
+	o.Set(Key("preferred_language"), String("en"))
+	o.Set(Key("time_zone"), String("Europe/Berlin"))
+	o.Set(Key("loyalty_points"), Int(845))
+	o.Set(Key("avg_session_length_minutes"), Float64(14.3))
+	o.Set(Key("newsletter_subscribed"), Bool(false))
+	o.Set(Key("ip_address"), String("192.168.0.42"))
+	o.Set(Key("notes"), Null())
 
 	if o.NumFields() != 16 {
 		t.Errorf("Object NumFields() = %d; want 16", o.NumFields())
 	}
 
 	checkInt := func(key string, expected int) {
-		if val := o.Get(key).Int(); val != expected {
+		if val := o.Get(Key(key)).Int(); val != expected {
 			t.Errorf("Int(%q) = %d; want %d", key, val, expected)
 		}
 	}
 	checkString := func(key, expected string) {
-		if val := o.Get(key).String(); val != expected {
+		if val := o.Get(Key(key)).String(); val != expected {
 			t.Errorf("String(%q) = %q; want %q", key, val, expected)
 		}
 	}
 	checkBool := func(key string, expected bool) {
-		if val := o.Get(key).Bool(); val != expected {
+		if val := o.Get(Key(key)).Bool(); val != expected {
 			t.Errorf("Bool(%q) = %v; want %v", key, val, expected)
 		}
 	}
 	checkFloat64 := func(key string, expected float64) {
-		if val := o.Get(key).Float64(); val != expected {
+		if val := o.Get(Key(key)).Float64(); val != expected {
 			t.Errorf("Float64(%q) = %f; want %f", key, val, expected)
 		}
 	}
@@ -172,26 +172,26 @@ func TestOverwrite(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
 
-	o.Set("foo", Int(3))
-	o.Set("foo", Int(5))
+	o.Set(Key("foo"), Int(3))
+	o.Set(Key("foo"), Int(5))
 
-	if foo := o.Get("foo").Int(); foo != 5 {
+	if foo := o.Get(Key("foo")).Int(); foo != 5 {
 		t.Errorf("foo = %d; want 5", foo)
 	}
 
 	// overwrite a short value with a longer one (forcing an append)
 	short := "hi"
 	long := "hello my friend, how are you doing today?"
-	o.Set("bar", Bytes([]byte(short)))
-	o.Set("bar", Bytes([]byte(long)))
+	o.Set(Key("bar"), Bytes([]byte(short)))
+	o.Set(Key("bar"), Bytes([]byte(long)))
 
-	if bar := o.Get("bar").RawBytes(); !bytes.Equal(bar, []byte(long)) {
+	if bar := o.Get(Key("bar")).RawBytes(); !bytes.Equal(bar, []byte(long)) {
 		t.Errorf("bar = %q; want %q", bar, long)
 	}
 
 	// overwrite with shorter value again; old value should have been zeroed
-	o.Set("bar", Bytes([]byte(short)))
-	if bar := o.Get("bar").RawString(); bar != short {
+	o.Set(Key("bar"), Bytes([]byte(short)))
+	if bar := o.Get(Key("bar")).RawString(); bar != short {
 		t.Errorf("bar = %q; want %q", bar, short)
 	}
 	i := bytes.Index(b.buf, []byte(short))
@@ -208,8 +208,8 @@ func TestOverwriteContainerUnaligned(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
 
-	o.Set("k", Bytes(make([]byte, nodeSize-1)))
-	obj := o.SetObject("k")
+	o.Set(Key("k"), Bytes(make([]byte, nodeSize-1)))
+	obj := o.SetObject(Key("k"))
 	if obj.c.off%4 == 0 {
 		t.Fatalf("container offset = %d; want unaligned (mod 4 != 0)", obj.c.off)
 	}
@@ -219,9 +219,9 @@ func TestNesting(t *testing.T) {
 	b := New(nil)
 
 	o := b.SetRootObject()
-	o.SetObject("foo").SetObject("bar").Set("baz", Int(3))
+	o.SetObject(Key("foo")).SetObject(Key("bar")).Set(Key("baz"), Int(3))
 
-	if baz := o.Get("foo").Object().Get("bar").Object().Get("baz").Int(); baz != 3 {
+	if baz := o.Get(Key("foo")).Object().Get(Key("bar")).Object().Get(Key("baz")).Int(); baz != 3 {
 		t.Errorf("Nested baz = %d; want 3", baz)
 	}
 
@@ -235,7 +235,7 @@ func TestNesting(t *testing.T) {
 				t.Errorf("Inner key/value = (%q, %v); want (\"bar\", TypeObject)", key2, val2.Type)
 			}
 			bar := val2.Object()
-			if baz := bar.Get("baz").Int(); baz != 3 {
+			if baz := bar.Get(Key("baz")).Int(); baz != 3 {
 				t.Errorf("Nested baz via All() = %d; want 3", baz)
 			}
 		}
@@ -247,7 +247,7 @@ func TestNestedSplitRightChild(t *testing.T) {
 	// into the right child, which requires childOff[1] to be intact.
 	b := New(nil)
 	o := b.SetRootObject()
-	nested := o.SetObject("obj")
+	nested := o.SetObject(Key("obj"))
 
 	candidates := []string{
 		"k00", "k01", "k02", "k03", "k04",
@@ -255,19 +255,15 @@ func TestNestedSplitRightChild(t *testing.T) {
 		"k10", "k11", "k12", "k13", "k14",
 		"k15", "k16", "k17", "k18", "k19",
 	}
-	type keyHashPair struct {
-		key  string
-		hash uint32
-	}
 	seen := make(map[uint32]bool, len(candidates))
-	keys := make([]keyHashPair, 0, len(candidates))
+	keys := make([]ObjectKey, 0, len(candidates))
 	for _, key := range candidates {
 		hash := keyHash(key)
 		if seen[hash] {
 			continue
 		}
 		seen[hash] = true
-		keys = append(keys, keyHashPair{key: key, hash: hash})
+		keys = append(keys, ObjectKey{key: key, hash: hash})
 	}
 	if len(keys) < 8 {
 		t.Fatalf("need at least 8 unique hashes, got %d", len(keys))
@@ -277,17 +273,17 @@ func TestNestedSplitRightChild(t *testing.T) {
 	})
 
 	for i := range 7 {
-		nested.Set(keys[i].key, Int(i))
+		nested.Set(keys[i], Int(i))
 	}
 	// Insert a key whose hash is greater than the median of the first 7.
-	nested.Set(keys[7].key, Int(77))
+	nested.Set(keys[7], Int(77))
 
 	for i := range 7 {
-		if v := nested.Get(keys[i].key).Int(); v != i {
+		if v := nested.Get(keys[i]).Int(); v != i {
 			t.Errorf("nested.Int(%q) = %d; want %d", keys[i].key, v, i)
 		}
 	}
-	if v := nested.Get(keys[7].key).Int(); v != 77 {
+	if v := nested.Get(keys[7]).Int(); v != 77 {
 		t.Errorf("nested.Int(%q) = %d; want 77", keys[7].key, v)
 	}
 	if nested.NumFields() != 8 {
@@ -326,16 +322,16 @@ func TestHashCollision(t *testing.T) {
 	if keyHash("ab") != keyHash("bA") {
 		t.Fatal("keys do not collide")
 	}
-	o.Set("ab", Int(1))
-	o.Set("bA", Int(2))
+	o.Set(Key("ab"), Int(1))
+	o.Set(Key("bA"), Int(2))
 
 	if o.NumFields() != 2 {
 		t.Errorf("NumFields() = %d; want 2", o.NumFields())
 	}
-	if v := o.Get("ab").Int(); v != 1 {
+	if v := o.Get(Key("ab")).Int(); v != 1 {
 		t.Errorf("Int(\"ab\") = %d; want 1", v)
 	}
-	if v := o.Get("bA").Int(); v != 2 {
+	if v := o.Get(Key("bA")).Int(); v != 2 {
 		t.Errorf("Int(\"bA\") = %d; want 2", v)
 	}
 }
@@ -361,38 +357,38 @@ func BenchmarkJohnDoe(b *testing.B) {
 		for b.Loop() {
 			o := buf.SetRootObject()
 
-			o.Set("user_id", Int(12345))
-			o.Set("username", String("jdoe"))
-			o.Set("email_address", String("jdoe@example.com"))
-			o.Set("is_active", Bool(true))
-			o.Set("account_balance", Float64(259.75))
-			o.Set("signup_date_str", String("2023-08-15"))
-			o.Set("last_login_date_iso", String("2025-09-13T13:20:00Z"))
-			o.Set("birth_year", Int(1996))
-			o.Set("phone_number", String("+14155555671"))
-			o.Set("preferred_language", String("en"))
-			o.Set("time_zone", String("Europe/Berlin"))
-			o.Set("loyalty_points", Int(845))
-			o.Set("avg_session_length_minutes", Float64(14.3))
-			o.Set("newsletter_subscribed", Bool(false))
-			o.Set("ip_address", String("192.168.0.42"))
-			o.Set("notes", Null())
+			o.Set(Key("user_id"), Int(12345))
+			o.Set(Key("username"), String("jdoe"))
+			o.Set(Key("email_address"), String("jdoe@example.com"))
+			o.Set(Key("is_active"), Bool(true))
+			o.Set(Key("account_balance"), Float64(259.75))
+			o.Set(Key("signup_date_str"), String("2023-08-15"))
+			o.Set(Key("last_login_date_iso"), String("2025-09-13T13:20:00Z"))
+			o.Set(Key("birth_year"), Int(1996))
+			o.Set(Key("phone_number"), String("+14155555671"))
+			o.Set(Key("preferred_language"), String("en"))
+			o.Set(Key("time_zone"), String("Europe/Berlin"))
+			o.Set(Key("loyalty_points"), Int(845))
+			o.Set(Key("avg_session_length_minutes"), Float64(14.3))
+			o.Set(Key("newsletter_subscribed"), Bool(false))
+			o.Set(Key("ip_address"), String("192.168.0.42"))
+			o.Set(Key("notes"), Null())
 
-			_ = o.Get("user_id").Int()
-			_ = o.Get("username").RawString()
-			_ = o.Get("email_address").RawString()
-			_ = o.Get("is_active").Bool()
-			_ = o.Get("account_balance").Float64()
-			_ = o.Get("signup_date_str").RawString()
-			_ = o.Get("last_login_date_iso").RawString()
-			_ = o.Get("birth_year").Int()
-			_ = o.Get("phone_number").RawString()
-			_ = o.Get("preferred_language").RawString()
-			_ = o.Get("time_zone").RawString()
-			_ = o.Get("loyalty_points").Int()
-			_ = o.Get("avg_session_length_minutes").Float64()
-			_ = o.Get("newsletter_subscribed").Bool()
-			_ = o.Get("ip_address").RawString()
+			_ = o.Get(Key("user_id")).Int()
+			_ = o.Get(Key("username")).RawString()
+			_ = o.Get(Key("email_address")).RawString()
+			_ = o.Get(Key("is_active")).Bool()
+			_ = o.Get(Key("account_balance")).Float64()
+			_ = o.Get(Key("signup_date_str")).RawString()
+			_ = o.Get(Key("last_login_date_iso")).RawString()
+			_ = o.Get(Key("birth_year")).Int()
+			_ = o.Get(Key("phone_number")).RawString()
+			_ = o.Get(Key("preferred_language")).RawString()
+			_ = o.Get(Key("time_zone")).RawString()
+			_ = o.Get(Key("loyalty_points")).Int()
+			_ = o.Get(Key("avg_session_length_minutes")).Float64()
+			_ = o.Get(Key("newsletter_subscribed")).Bool()
+			_ = o.Get(Key("ip_address")).RawString()
 		}
 	})
 	b.Run("JSON", func(b *testing.B) {
@@ -434,6 +430,92 @@ func BenchmarkJohnDoe(b *testing.B) {
 		for b.Loop() {
 			js, _ := json.Marshal(johnDoe)
 			json.Unmarshal(js, &johnDoe)
+		}
+	})
+}
+
+func BenchmarkKey(b *testing.B) {
+	key := strings.Repeat("a", 1e6)
+	b.SetBytes(int64(len(key)))
+	for b.Loop() {
+		_ = Key(key)
+	}
+}
+
+func BenchmarkSet(b *testing.B) {
+	b.Run("Short", func(b *testing.B) {
+		buf := New(make([]byte, 0, 2048))
+		o := buf.SetRootObject()
+		for b.Loop() {
+			o.Set(Key("foo"), Null())
+		}
+	})
+
+	b.Run("ShortPrecomputed", func(b *testing.B) {
+		buf := New(make([]byte, 0, 2048))
+		o := buf.SetRootObject()
+		key := Key("foo")
+		for b.Loop() {
+			o.Set(key, Null())
+		}
+	})
+
+	b.Run("Long", func(b *testing.B) {
+		buf := New(make([]byte, 0, 2048))
+		o := buf.SetRootObject()
+		key := strings.Repeat("a", 1000)
+		for b.Loop() {
+			o.Set(Key(key), Null())
+		}
+	})
+
+	b.Run("LongPrecomputed", func(b *testing.B) {
+		buf := New(make([]byte, 0, 2048))
+		o := buf.SetRootObject()
+		key := Key(strings.Repeat("a", 1000))
+		for b.Loop() {
+			o.Set(key, Null())
+		}
+	})
+}
+
+func BenchmarkGet(b *testing.B) {
+	b.Run("Short", func(b *testing.B) {
+		buf := New(make([]byte, 0, 2048))
+		o := buf.SetRootObject()
+		o.Set(Key("foo"), Null())
+		for b.Loop() {
+			_ = o.Get(Key("foo"))
+		}
+	})
+
+	b.Run("ShortPrecomputed", func(b *testing.B) {
+		buf := New(make([]byte, 0, 2048))
+		o := buf.SetRootObject()
+		key := Key("foo")
+		o.Set(key, Null())
+		for b.Loop() {
+			_ = o.Get(key)
+		}
+	})
+
+	b.Run("Long", func(b *testing.B) {
+		buf := New(make([]byte, 0, 2048))
+		o := buf.SetRootObject()
+		key := strings.Repeat("a", 1000)
+		o.Set(Key(key), Null())
+		for b.Loop() {
+			_ = o.Get(Key(key))
+		}
+	})
+
+	b.Run("LongPrecomputed", func(b *testing.B) {
+		buf := New(make([]byte, 0, 2048))
+		o := buf.SetRootObject()
+		key := Key(strings.Repeat("a", 1000))
+		o.Set(key, Null())
+		for b.Loop() {
+			_ = o.Get(key)
 		}
 	})
 }

@@ -58,6 +58,17 @@ func keyHash(key string) uint32 {
 	return hash
 }
 
+// A ObjectKey is a key paired with its precomputed hash.
+type ObjectKey struct {
+	key  string
+	hash uint32
+}
+
+// Key returns the ObjectKey for the given string.
+func Key(key string) ObjectKey {
+	return ObjectKey{key: key, hash: keyHash(key)}
+}
+
 // A Buffer is a serialized B-tree.
 type Buffer struct {
 	buf []byte
@@ -406,16 +417,16 @@ func (o Object) NumFields() int { return o.c.count() }
 
 // Get retrieves the value associated with the given key. If the key does not
 // exist, the value will have TypeInvalid.
-func (o Object) Get(key string) Value { return o.c.value(key, keyHash(key)) }
+func (o Object) Get(key ObjectKey) Value { return o.c.value(key.key, key.hash) }
 
 // Set sets the value associated with the given key.
-func (o Object) Set(key string, val Value) { o.c.setValue(key, keyHash(key), val) }
+func (o Object) Set(key ObjectKey, val Value) { o.c.setValue(key.key, key.hash, val) }
 
 // SetObject sets a field to an empty Object and returns it.
-func (o Object) SetObject(key string) Object { return o.c.setObject(key, keyHash(key)) }
+func (o Object) SetObject(key ObjectKey) Object { return o.c.setObject(key.key, key.hash) }
 
 // SetArray sets a field to an empty Array and returns it.
-func (o Object) SetArray(key string) Array { return o.c.setArray(key, keyHash(key)) }
+func (o Object) SetArray(key ObjectKey) Array { return o.c.setArray(key.key, key.hash) }
 
 // All returns an iterator over the Object's key-value pairs. The order of the
 // pairs is not specified.
