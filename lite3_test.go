@@ -10,6 +10,20 @@ import (
 	"testing"
 )
 
+// panics -> errors or bools
+// jq-style Path(...)
+// fuzzing/hardening against untrusted buffers
+
+// feedback:
+// - ditch generation system
+//   - maybe not; could be used to cache nodes in container?
+// - ditch C strings
+// - splitting should reset left child's gen to 0
+//   - maybe set typ too?
+// - treeNodes can be unaligned if inserted in-place
+
+// treeNode and treeNodePtr; keyVal and keyValPtr
+
 func TestBasic(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
