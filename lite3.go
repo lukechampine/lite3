@@ -21,6 +21,7 @@ const (
 	nodeSize = 96
 )
 
+// Value types.
 const (
 	TypeNull = iota
 	TypeBool
@@ -57,6 +58,7 @@ func keyHash(key string) uint32 {
 	return hash
 }
 
+// A Buffer is a serialized B-tree.
 type Buffer struct {
 	buf []byte
 }
@@ -69,15 +71,24 @@ func (b *Buffer) grow(n int) {
 	}
 }
 
+type cNode struct {
+	typeGen  uint32 // packed 8 bit type + 24 bit generation
+	hashes   [7]uint32
+	kcSize   uint32 // packed 8 bit key count + 24 bit size
+	kvOff    [7]uint32
+	childOff [8]uint32
+}
+
+var _ [nodeSize]struct{} = [unsafe.Sizeof(cNode{})]struct{}{}
+
 type treeNode struct {
 	off      uint32
 	typ      uint8
 	gen      uint32
-	hashes   [7]uint32
 	keyCount uint8
 	size     uint32
-	kvOff    [7]uint32
-	childOff [8]uint32
+
+	*cNode
 }
 
 func (b *Buffer) allocNode() (offset uint32) {
@@ -87,37 +98,23 @@ func (b *Buffer) allocNode() (offset uint32) {
 }
 
 func (b *Buffer) treeNode(off uint32) treeNode {
-	var u32s [24]uint32
-	for i := range u32s {
-		u32s[i] = binary.LittleEndian.Uint32(b.buf[off+uint32(i*4):])
-	}
+	cn := (*cNode)(unsafe.Pointer(&b.buf[off]))
 	return treeNode{
 		off:      off,
-		typ:      uint8(u32s[0]),
-		gen:      u32s[0] >> 8,
-		hashes:   [7]uint32(u32s[1:8]),
-		keyCount: uint8(u32s[8] & 7),
-		size:     u32s[8] >> 6,
-		kvOff:    [7]uint32(u32s[9:16]),
-		childOff: [8]uint32(u32s[16:24]),
+		typ:      uint8(cn.typeGen & 0xFF),
+		gen:      cn.typeGen >> 8,
+		keyCount: uint8(cn.kcSize & 7),
+		size:     cn.kcSize >> 6,
+		cNode:    cn,
 	}
 }
 
 func (b *Buffer) flushNode(node *treeNode) {
-	genType := (uint32(node.typ) & 0xFF) | (node.gen << 8)
-	sizeKC := (node.size << 6) | (uint32(node.keyCount) & 7)
-
-	buf := b.buf[:node.off]
-	buf = binary.LittleEndian.AppendUint32(buf, genType)
-	for _, u := range &node.hashes {
-		buf = binary.LittleEndian.AppendUint32(buf, u)
-	}
-	buf = binary.LittleEndian.AppendUint32(buf, sizeKC)
-	for _, u := range &node.kvOff {
-		buf = binary.LittleEndian.AppendUint32(buf, u)
-	}
-	for _, u := range &node.childOff {
-		buf = binary.LittleEndian.AppendUint32(buf, u)
+	node.cNode.typeGen = uint32(node.typ) | (node.gen << 8)
+	node.cNode.kcSize = uint32(node.keyCount) | (node.size << 6)
+	if node.cNode != (*cNode)(unsafe.Pointer(&b.buf[node.off])) {
+		*(*cNode)(unsafe.Pointer(&b.buf[node.off])) = *node.cNode
+		node.cNode = (*cNode)(unsafe.Pointer(&b.buf[node.off]))
 	}
 }
 
@@ -135,10 +132,12 @@ func (node *treeNode) hasChildren() bool {
 }
 
 func (node *treeNode) slot(hash uint32) (i uint8, exists bool) {
-	for i < node.keyCount && node.hashes[i] < hash {
+	// NOTE: equivalent to slices.BinarySearch(node.hashes[:node.keyCount], hash)
+	h := node.hashes[:node.keyCount]
+	for i < uint8(len(h)) && h[i] < hash {
 		i++
 	}
-	return i, i < node.keyCount && node.hashes[i] == hash
+	return i, i < uint8(len(h)) && h[i] == hash
 }
 
 func (node *treeNode) insertKV(i uint8, hash uint32, off uint32) {
@@ -263,6 +262,7 @@ func (b *Buffer) splitChild(node *treeNode, i uint8) {
 		off:      b.allocNode(),
 		typ:      node.typ,
 		keyCount: med,
+		cNode:    (*cNode)(unsafe.Pointer(&b.buf[len(b.buf)-nodeSize])),
 	}
 	copy(sibling.hashes[:med], child.hashes[med+1:])
 	copy(sibling.kvOff[:med], child.kvOff[med+1:])
@@ -290,13 +290,17 @@ func (c container) set(key string, keyHash uint32, valType uint8, val []byte) ui
 	// create a new parent to point to the current root.
 	if root.isFull() {
 		parent := treeNode{
-			off:  root.off,
-			typ:  root.typ,
-			gen:  root.gen,
-			size: root.size,
+			off:   root.off,
+			typ:   root.typ,
+			gen:   root.gen,
+			size:  root.size,
+			cNode: (*cNode)(unsafe.Pointer(&c.b.buf[root.off])),
 		}
 		root.off = c.b.allocNode()
 		c.b.flushNode(&root)
+		clear(parent.hashes[:])
+		clear(parent.kvOff[:])
+		clear(parent.childOff[:])
 		parent.insertChild(0, root.off)
 		c.b.splitChild(&parent, 0)
 		root = parent
@@ -392,22 +396,36 @@ func (c container) setArray(key string, keyHash uint32) Array {
 	return Array{c.setContainer(key, keyHash, TypeArray)}
 }
 
+// An Object maps string keys to Value fields.
 type Object struct {
 	c container
 }
 
-func (o Object) NumFields() int              { return o.c.count() }
-func (o Object) Get(key string) Value        { return o.c.value(key, keyHash(key)) }
-func (o Object) Set(key string, val Value)   { o.c.setValue(key, keyHash(key), val) }
+// NumFields returns the number of fields in the object.
+func (o Object) NumFields() int { return o.c.count() }
+
+// Get retrieves the value associated with the given key. If the key does not
+// exist, the value will have TypeInvalid.
+func (o Object) Get(key string) Value { return o.c.value(key, keyHash(key)) }
+
+// Set sets the value associated with the given key.
+func (o Object) Set(key string, val Value) { o.c.setValue(key, keyHash(key), val) }
+
+// SetObject sets a field to an empty Object and returns it.
 func (o Object) SetObject(key string) Object { return o.c.setObject(key, keyHash(key)) }
-func (o Object) SetArray(key string) Array   { return o.c.setArray(key, keyHash(key)) }
+
+// SetArray sets a field to an empty Array and returns it.
+func (o Object) SetArray(key string) Array { return o.c.setArray(key, keyHash(key)) }
+
+// All returns an iterator over the Object's key-value pairs. The order of the
+// pairs is not specified.
 func (o Object) All() iter.Seq2[string, Value] {
 	return func(yield func(string, Value) bool) {
 		it := o.c.iter()
 		var key string
 		var index int
 		var value Value
-		for it.Next(&key, &index, &value) {
+		for it.next(&key, &index, &value) {
 			if !yield(key, value) {
 				return
 			}
@@ -415,22 +433,35 @@ func (o Object) All() iter.Seq2[string, Value] {
 	}
 }
 
+// An Array is a collection of Values keyed by index.
 type Array struct {
 	c container
 }
 
-func (a Array) Len() int               { return a.c.count() }
-func (a Array) Get(i int) Value        { return a.c.value("", uint32(i)) }
-func (a Array) Set(i int, val Value)   { a.c.setValue("", uint32(i), val) }
+// Len returns the length of the array.
+func (a Array) Len() int { return a.c.count() }
+
+// Get retrieves the value at the given index. If the index is out of bounds,
+// the value will have TypeInvalid.
+func (a Array) Get(i int) Value { return a.c.value("", uint32(i)) }
+
+// Set sets the value at the given index.
+func (a Array) Set(i int, val Value) { a.c.setValue("", uint32(i), val) }
+
+// SetObject sets the value at the given index to an empty Object and returns it.
 func (a Array) SetObject(i int) Object { return a.c.setObject("", uint32(i)) }
-func (a Array) SetArray(i int) Array   { return a.c.setArray("", uint32(i)) }
+
+// SetArray sets the value at the given index to an empty Array and returns it.
+func (a Array) SetArray(i int) Array { return a.c.setArray("", uint32(i)) }
+
+// All returns an iterator over the Array's index-value pairs, in order.
 func (a Array) All() iter.Seq2[int, Value] {
 	return func(yield func(int, Value) bool) {
 		it := a.c.iter()
 		var key string
 		var index int
 		var value Value
-		for it.Next(&key, &index, &value) {
+		for it.next(&key, &index, &value) {
 			if !yield(index, value) {
 				return
 			}
@@ -438,6 +469,7 @@ func (a Array) All() iter.Seq2[int, Value] {
 	}
 }
 
+// A Value can be stored in a Lite³ Object or Array.
 type Value struct {
 	Type uint8
 	num  uint64
@@ -477,6 +509,8 @@ func (kv keyVal) toValue(b *Buffer) Value {
 	}
 }
 
+// Any returns the Value as an empty interface, panicking if the value's type is
+// invalid. TypeNull is represented as nil.
 func (v Value) Any() any {
 	switch v.Type {
 	case TypeNull:
@@ -502,12 +536,36 @@ func (v Value) Any() any {
 	}
 }
 
-func (v Value) Bool() bool       { return v.num != 0 }
-func (v Value) Uint64() uint64   { return v.num }
-func (v Value) Int() int         { return int(v.Uint64()) }
+// Bool returns the Value as a bool. If the Value is not TypeBool, the result is
+// undefined.
+func (v Value) Bool() bool { return v.num != 0 }
+
+// Uint64 returns the Value as a uint64. If the Value is not TypeInt, the result
+// is undefined.
+func (v Value) Uint64() uint64 { return v.num }
+
+// Int returns the Value as an int. If the Value is not TypeInt, the result is
+// undefined.
+func (v Value) Int() int { return int(v.Uint64()) }
+
+// Float64 returns the Value as a float64. If the Value is not TypeFloat, the
+// result is undefined.
 func (v Value) Float64() float64 { return math.Float64frombits(v.Uint64()) }
+
+// RawBytes returns the Value as a []byte. If the Value is not TypeBytes, the
+// result is undefined. The returned slice must not be modified.
 func (v Value) RawBytes() []byte { return v.str }
-func (v Value) Bytes() []byte    { return slices.Clone(v.RawBytes()) }
+
+// Bytes returns the Value as a []byte. If the Value is not TypeBytes, the result is
+// undefined.
+func (v Value) Bytes() []byte { return slices.Clone(v.RawBytes()) }
+
+// RawString returns the Value as a string. If the Value is not TypeString, the
+// result is undefined. The returned string aliases the same slice as RawBytes.
+func (v Value) RawString() string { return unsafeString(v.RawBytes()) }
+
+// String returns the Value as a string. If the Value is not TypeString, it
+// returns a human-readable representation of the Value.
 func (v Value) String() string {
 	switch v.Type {
 	case TypeString:
@@ -521,22 +579,40 @@ func (v Value) String() string {
 	}
 	return fmt.Sprint(v.Any())
 }
-func (v Value) RawString() string { return unsafeString(v.RawBytes()) }
-func (v Value) Object() Object    { return Object{c: v.c} }
-func (v Value) Array() Array      { return Array{c: v.c} }
 
+// Object returns the Value as an Object. If the Value is not TypeObject, the
+// result is undefined.
+func (v Value) Object() Object { return Object{c: v.c} }
+
+// Array returns the Value as an Array. If the Value is not TypeArray, the
+// result is undefined.
+func (v Value) Array() Array { return Array{c: v.c} }
+
+// Null returns a Value of TypeNull.
 func Null() Value { return Value{Type: TypeNull} }
+
+// Bool returns a Value of TypeBool.
 func Bool(b bool) Value {
 	if b {
 		return Value{Type: TypeBool, num: 1}
 	}
 	return Value{Type: TypeBool, num: 0}
 }
-func Uint64(u uint64) Value   { return Value{Type: TypeInt, num: u} }
-func Int(i int) Value         { return Uint64(uint64(i)) }
+
+// Uint64 returns a Value of TypeInt.
+func Uint64(u uint64) Value { return Value{Type: TypeInt, num: u} }
+
+// Int returns a Value of TypeInt.
+func Int(i int) Value { return Uint64(uint64(i)) }
+
+// Float64 returns a Value of TypeFloat.
 func Float64(f float64) Value { return Value{Type: TypeFloat, num: math.Float64bits(f)} }
-func Bytes(b []byte) Value    { return Value{Type: TypeBytes, str: b} }
-func String(s string) Value   { return Value{Type: TypeString, str: unsafeSlice(s)} }
+
+// Bytes returns a Value of TypeBytes.
+func Bytes(b []byte) Value { return Value{Type: TypeBytes, str: b} }
+
+// String returns a Value of TypeString.
+func String(s string) Value { return Value{Type: TypeString, str: unsafeSlice(s)} }
 
 type liter struct {
 	b         *Buffer
@@ -566,7 +642,7 @@ func newLiter(b *Buffer, node treeNode) *liter {
 	return it
 }
 
-func (it *liter) Next(key *string, index *int, value *Value) bool {
+func (it *liter) next(key *string, index *int, value *Value) bool {
 	if it.err != nil {
 		return false
 	} else if it.gen != it.b.treeNode(it.nodeOffs[0]).gen {
@@ -636,7 +712,7 @@ func (c container) appendJSON(buf *bytes.Buffer) {
 	var key string
 	var index int
 	var value Value
-	for it.Next(&key, &index, &value) {
+	for it.next(&key, &index, &value) {
 		if !first {
 			buf.WriteByte(',')
 		}
@@ -719,7 +795,8 @@ func (c container) unmarshalJSON(dec *json.Decoder) error {
 func (b *Buffer) setRootContainer(typ uint8) container {
 	b.buf = b.buf[:0]
 	b.grow(nodeSize)
-	n := treeNode{off: 0, typ: typ}
+	clear(b.buf)
+	n := treeNode{off: 0, typ: typ, cNode: (*cNode)(unsafe.Pointer(&b.buf[0]))}
 	b.flushNode(&n)
 	return container{
 		b:   b,
@@ -732,6 +809,8 @@ func (b *Buffer) rootContainer() container {
 	return container{b: b, typ: b.buf[0], off: 0}
 }
 
+// Root returns the root container of the Buffer, which will be either an Object
+// or an Array. If the Buffer is empty or has an invalid root, Root returns nil.
 func (b *Buffer) Root() any {
 	c := b.rootContainer()
 	switch c.typ {
@@ -744,17 +823,25 @@ func (b *Buffer) Root() any {
 	}
 }
 
+// SetRootObject sets the root container of the Buffer to an empty Object and
+// returns it.
 func (b *Buffer) SetRootObject() Object { return Object{b.setRootContainer(TypeObject)} }
-func (b *Buffer) SetRootArray() Array   { return Array{b.setRootContainer(TypeArray)} }
 
+// SetRootArray sets the root container of the Buffer to an empty Array and
+// returns it.
+func (b *Buffer) SetRootArray() Array { return Array{b.setRootContainer(TypeArray)} }
+
+// Bytes returns the underlying byte slice of the Buffer.
 func (b *Buffer) Bytes() []byte { return b.buf }
 
+// MarshalJSON implements json.Marshaler.
 func (b *Buffer) MarshalJSON() ([]byte, error) {
 	var buf bytes.Buffer
 	b.rootContainer().appendJSON(&buf)
 	return buf.Bytes(), nil
 }
 
+// UnmarshalJSON implements json.Unmarshaler.
 func (b *Buffer) UnmarshalJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -770,6 +857,8 @@ func (b *Buffer) UnmarshalJSON(data []byte) error {
 	}
 }
 
+// New creates a new Buffer backed by the given byte slice. If the Buffer later
+// grows beyond the capacity of buf, a new underlying slice will be allocated.
 func New(buf []byte) *Buffer {
 	return &Buffer{buf: buf}
 }
