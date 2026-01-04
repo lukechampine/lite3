@@ -93,101 +93,156 @@ type cNode struct {
 var _ [nodeSize]struct{} = [unsafe.Sizeof(cNode{})]struct{}{}
 
 type treeNode struct {
-	off      uint32
-	typ      uint8
-	gen      uint32
-	keyCount uint8
-	size     uint32
-
-	*cNode
+	b   *Buffer
+	off uint32 // ptr to cNode
 }
 
 func (b *Buffer) allocNode() treeNode {
 	b.grow(((len(b.buf) + 3) & ^3) - len(b.buf))
 	b.grow(nodeSize)
-	return b.treeNode(uint32(len(b.buf) - nodeSize))
+	off := uint32(len(b.buf) - nodeSize)
+	clear(b.buf[off:])
+	return b.treeNode(off)
 }
 
 func (b *Buffer) treeNode(off uint32) treeNode {
-	cn := (*cNode)(unsafe.Pointer(&b.buf[off]))
-	return treeNode{
-		off:      off,
-		typ:      uint8(cn.typeGen & 0xFF),
-		gen:      cn.typeGen >> 8,
-		keyCount: uint8(cn.kcSize & 7),
-		size:     cn.kcSize >> 6,
-		cNode:    cn,
-	}
+	return treeNode{b: b, off: off}
 }
 
-func (b *Buffer) flushNode(node *treeNode) {
-	node.cNode.typeGen = uint32(node.typ) | (node.gen << 8)
-	node.cNode.kcSize = uint32(node.keyCount) | (node.size << 6)
-	// Guard against Buffer reallocs invalidating our pointer
-	if node.cNode != (*cNode)(unsafe.Pointer(&b.buf[node.off])) {
-		*(*cNode)(unsafe.Pointer(&b.buf[node.off])) = *node.cNode
-		node.cNode = (*cNode)(unsafe.Pointer(&b.buf[node.off]))
-	}
+func (node treeNode) ptr() *cNode {
+	return (*cNode)(unsafe.Pointer(&node.b.buf[node.off]))
 }
 
-func (node *treeNode) isFull() bool {
-	return len(node.hashes[node.keyCount:]) == 0
+func (node treeNode) setType(typ uint8) {
+	node.b.buf[node.off] = typ
 }
 
-func (node *treeNode) hasChildren() bool {
+func (node treeNode) getType() uint8 {
+	return node.b.buf[node.off]
+}
+
+func (node treeNode) keyCount() uint8 {
+	return uint8(node.ptr().kcSize & 7)
+}
+
+func (node treeNode) setKeyCount(kc uint8) {
+	p := node.ptr()
+	p.kcSize = (p.kcSize &^ 7) | uint32(kc&7)
+}
+
+func (node treeNode) size() uint32 {
+	return node.ptr().kcSize >> 6
+}
+
+func (node treeNode) setSize(size uint32) {
+	p := node.ptr()
+	p.kcSize = uint32(node.keyCount()) | (size << 6)
+}
+
+func (node treeNode) incGen() {
+	p := node.ptr()
+	p.typeGen = uint32(node.getType()) | (p.typeGen + (1 << 8))
+}
+
+func (node treeNode) getGen() uint32 {
+	return node.ptr().typeGen >> 8
+}
+
+func (node treeNode) isFull() bool {
+	return node.keyCount() == uint8(len(cNode{}.hashes))
+}
+
+func (node treeNode) hasChildren() bool {
 	// The "correct" check is node.childOff == ([8]uint8{}), but since:
 	//   a) children are stored in sorted order, and
 	//   b) the only node with an offset of 0 is the buffer root, and
 	//   c) that node cannot be a child of any other node,
 	// this is equivalent.
-	return node.childOff[0] != 0
+	return node.ptr().childOff[0] != 0
 }
 
-func (node *treeNode) slot(hash uint32) (i uint8, exists bool) {
+func (node treeNode) child(i uint8) treeNode {
+	return node.b.treeNode(node.ptr().childOff[i])
+}
+
+func (node treeNode) slot(hash uint32) (i uint8, exists bool) {
 	// NOTE: equivalent to slices.BinarySearch(node.hashes[:node.keyCount], hash)
-	h := node.hashes[:node.keyCount]
+	h := node.ptr().hashes[:node.keyCount()]
 	for i < uint8(len(h)) && h[i] < hash {
 		i++
 	}
 	return i, i < uint8(len(h)) && h[i] == hash
 }
 
-func (node *treeNode) insertKV(i uint8, hash uint32, off uint32) {
-	copy(node.hashes[i+1:], node.hashes[i:node.keyCount])
-	copy(node.kvOff[i+1:], node.kvOff[i:node.keyCount])
-	node.hashes[i] = hash
-	node.kvOff[i] = off
-	node.keyCount++
+func (node treeNode) insertKV(i uint8, hash uint32, off uint32) {
+	p := node.ptr()
+	kc := node.keyCount()
+	copy(p.hashes[i+1:], p.hashes[i:kc])
+	copy(p.kvOff[i+1:], p.kvOff[i:kc])
+	p.hashes[i] = hash
+	p.kvOff[i] = off
+	node.setKeyCount(kc + 1)
 }
 
-func (node *treeNode) insertChild(i uint8, off uint32) {
-	copy(node.childOff[i+1:], node.childOff[i:])
-	node.childOff[i] = off
+func (node treeNode) insertChild(i uint8, child treeNode) {
+	p := node.ptr()
+	copy(p.childOff[i+1:], p.childOff[i:])
+	p.childOff[i] = child.off
 }
 
-type keyVal struct {
-	key    []byte
-	typ    *uint8 // &b.buf[typOff]
-	val    []byte // if TypeString/TypeBytes, excludes length prefix and C string terminator
-	typOff uint32
+type valPtr struct {
+	b   *Buffer
+	off uint32
 }
 
-func (b *Buffer) readKV(off uint32, hasKey bool) (kv keyVal) {
-	buf := b.buf[off:]
-	if hasKey {
-		tagSize := uint32(buf[0]&3) + 1
-		keySize := binary.LittleEndian.Uint32(buf) & ((1 << (8 * tagSize)) - 1) >> 2
-		kv.key = buf[tagSize:][:keySize-1] // exclude C string terminator
-		kv.typOff = tagSize + keySize
-		buf = buf[tagSize+keySize:]
+func (vp valPtr) len() int {
+	typ := vp.b.buf[vp.off]
+	n := typeSizes[typ]
+	if typ == TypeString || typ == TypeBytes {
+		n += int(binary.LittleEndian.Uint32(vp.b.buf[vp.off+1:]))
 	}
-	kv.typOff += off
-	kv.typ = &buf[0]
-	kv.val = buf[1:][:typeSizes[*kv.typ]]
-	if *kv.typ == TypeString || *kv.typ == TypeBytes {
-		kv.val = kv.val[4:][:binary.LittleEndian.Uint32(kv.val)-1] // exclude C string terminator
+	return n
+}
+
+func (vp valPtr) clear() {
+	clear(vp.b.buf[vp.off:][:1+vp.len()])
+}
+
+func (vp valPtr) toValue() (v Value) {
+	if vp.b == nil {
+		return Value{Type: TypeInvalid}
+	}
+	buf := vp.b.buf[vp.off:]
+	v.Type = buf[0]
+	switch v.Type {
+	case TypeInvalid, TypeNull:
+	case TypeBool:
+		v.num = uint64(buf[1])
+	case TypeInt, TypeFloat:
+		v.num = binary.LittleEndian.Uint64(buf[1:])
+	case TypeString, TypeBytes:
+		n := binary.LittleEndian.Uint32(buf[1:])
+		v.str = buf[1+4:][:n-1] // exclude C string terminator
+	case TypeObject, TypeArray:
+		v.c = container{treeNode{vp.b, vp.off}}
+	default:
+		panic("unhandled type")
 	}
 	return
+}
+
+func (node treeNode) kv(i uint8) ([]byte, valPtr) {
+	off := node.ptr().kvOff[i]
+	buf := node.b.buf[off:]
+	var key []byte
+	if node.getType() == TypeObject {
+		tagSize := uint32(buf[0]&3) + 1
+		keySize := binary.LittleEndian.Uint32(buf) & ((1 << (8 * tagSize)) - 1) >> 2
+		key = buf[tagSize:][:keySize-1] // exclude C string terminator
+		off += tagSize + keySize
+		buf = buf[tagSize+keySize:]
+	}
+	return key, valPtr{node.b, off}
 }
 
 func appendVal(buf []byte, valType uint8, val []byte) []byte {
@@ -232,121 +287,112 @@ func (b *Buffer) appendKV(key string, valType uint8, val []byte) (uint32, uint32
 	return kvOff, typOff
 }
 
-type container struct {
-	b   *Buffer
-	typ uint8
-	off uint32
+func (node treeNode) splitChild(i uint8) {
+	// Move median into parent
+	child := node.child(i)
+	cptr := child.ptr()
+	const med = uint8(len(cNode{}.hashes) / 2)
+	node.insertKV(i, cptr.hashes[med], cptr.kvOff[med])
+
+	// Move lower half of entries into new sibling
+	sibling := node.b.allocNode()
+	sibling.setType(node.getType())
+	sibling.setKeyCount(med)
+	copy(sibling.ptr().hashes[:med], cptr.hashes[med+1:])
+	copy(sibling.ptr().kvOff[:med], cptr.kvOff[med+1:])
+	copy(sibling.ptr().childOff[:med], cptr.childOff[med+1:])
+	clear(cptr.hashes[med:])
+	clear(cptr.kvOff[med:])
+	clear(cptr.childOff[med:])
+	child.setKeyCount(med)
+	child.setSize(0)
+
+	// record sibling in parent
+	node.insertChild(i+1, sibling)
 }
 
-func (c container) get(key string, keyHash uint32) keyVal {
-	try := func(h uint32) (keyVal, bool) {
-		node := c.b.treeNode(c.off)
+type container struct {
+	node treeNode
+}
+
+func (c container) count() int   { return int(c.node.size()) }
+func (c container) iter() *liter { return newLiter(c.node) }
+
+func (c container) value(key string, keyHash uint32) Value {
+	try := func(h uint32) (valPtr, bool) {
+		node := c.node
 		for {
 			i, exists := node.slot(h)
 			if exists {
-				kv := c.b.readKV(node.kvOff[i], key != "")
-				if key != "" && string(kv.key) != key {
-					return keyVal{}, false
+				curKey, val := node.kv(i)
+				if string(curKey) != key {
+					return valPtr{}, false
 				}
-				return kv, true
+				return val, true
 			} else if !node.hasChildren() {
-				return keyVal{}, true // not found
+				return valPtr{}, true // not found
 			}
-			node = c.b.treeNode(node.childOff[i])
+			node = node.child(i)
 		}
 	}
 
 	for probe := uint32(0); ; probe++ {
-		if kv, ok := try(keyHash + probe*probe); ok {
-			return kv
+		if vp, ok := try(keyHash + probe*probe); ok {
+			return vp.toValue()
 		}
 	}
 }
 
-func (b *Buffer) splitChild(node *treeNode, i uint8) {
-	// Move median into parent
-	child := b.treeNode(node.childOff[i])
-	const med = uint8(len(child.hashes) / 2)
-	node.insertKV(i, child.hashes[med], child.kvOff[med])
-
-	// Move lower half of entries into new sibling
-	sibling := b.allocNode()
-	sibling.typ = node.typ
-	sibling.keyCount = med
-	copy(sibling.hashes[:med], child.hashes[med+1:])
-	copy(sibling.kvOff[:med], child.kvOff[med+1:])
-	copy(sibling.childOff[:med], child.childOff[med+1:])
-	clear(child.hashes[med:])
-	clear(child.kvOff[med:])
-	clear(child.childOff[med:])
-	child.keyCount = med
-	child.size = 0
-
-	// record sibling in parent
-	node.insertChild(i+1, sibling.off)
-
-	b.flushNode(node)
-	b.flushNode(&child)
-	b.flushNode(&sibling)
-}
-
 func (c container) set(key string, keyHash uint32, valType uint8, val []byte) uint32 {
-	root := c.b.treeNode(c.off)
-	root.gen++
-	c.b.flushNode(&root)
+	root := c.node
+	root.incGen()
+	b := root.b
 
 	// Special case: root is full, and we don't have a parent to split into;
 	// create a new parent to point to the current root.
 	if root.isFull() {
-		movedRoot := c.b.allocNode()
-		copy(c.b.buf[movedRoot.off:], c.b.buf[root.off:])
+		movedRoot := b.allocNode()
+		copy(b.buf[movedRoot.off:], b.buf[root.off:])
 		// root becomes parent
-		root.keyCount = 0
-		clear(root.hashes[:])
-		clear(root.kvOff[:])
-		clear(root.childOff[:])
-		root.insertChild(0, movedRoot.off)
-		c.b.splitChild(&root, 0)
+		root.setKeyCount(0)
+		clear(root.ptr().hashes[:])
+		clear(root.ptr().kvOff[:])
+		clear(root.ptr().childOff[:])
+		root.insertChild(0, movedRoot)
+		root.splitChild(0)
 	}
 
 	try := func(h uint32) (uint32, bool) {
 		node := root
 		for {
 			if i, exists := node.slot(h); exists {
-				cur := c.b.readKV(node.kvOff[i], node.typ == TypeObject)
-				if string(cur.key) != key {
+				curKey, curVal := node.kv(i)
+				if string(curKey) != key {
 					return 0, false // collision
-				} else if len(cur.val) >= len(val) {
+				} else if curVal.len() >= len(val) {
 					// Reuse existing KV space
-					*cur.typ = valType
-					clear(cur.val[len(val):]) // clear trailing garbage
-					appendVal(c.b.buf[:cur.typOff], valType, val)
-					return cur.typOff, true
+					curVal.clear()
+					_ = appendVal(b.buf[:curVal.off], valType, val)
+					return curVal.off, true
 				}
 				// Append new KV and wipe the old one
-				clear(cur.key)
-				*cur.typ = 0
-				clear(cur.val)
-				kvOff, typOff := c.b.appendKV(key, valType, val)
-				node.kvOff[i] = kvOff
-				c.b.flushNode(&node)
+				curVal.clear()
+				kvOff, typOff := b.appendKV(key, valType, val)
+				node.ptr().kvOff[i] = kvOff
 				return typOff, true
 			} else if !node.hasChildren() {
 				// Leaf node with capacity; insert here
-				kvOff, typOff := c.b.appendKV(key, valType, val)
+				kvOff, typOff := b.appendKV(key, valType, val)
 				node.insertKV(i, h, kvOff)
-				c.b.flushNode(&node)
 				// increment container count
-				root = c.b.treeNode(root.off)
-				root.size++
-				c.b.flushNode(&root)
+				root.setSize(root.size() + 1)
 				return typOff, true
 			} else {
 				// Descend into child (or split if full)
-				if child := c.b.treeNode(node.childOff[i]); !child.isFull() {
+				if child := node.child(i); !child.isFull() {
 					node = child
 				} else {
-					c.b.splitChild(&node, i) // we'll descend on next iteration
+					node.splitChild(i) // we'll descend on next iteration
 				}
 			}
 		}
@@ -357,13 +403,6 @@ func (c container) set(key string, keyHash uint32, valType uint8, val []byte) ui
 			return typOff
 		}
 	}
-}
-
-func (c container) count() int   { return int(c.b.treeNode(c.off).size) }
-func (c container) iter() *liter { return newLiter(c.b, c.b.treeNode(c.off)) }
-
-func (c container) value(key string, keyHash uint32) Value {
-	return c.get(key, keyHash).toValue(c.b)
 }
 
 func (c container) setValue(key string, keyHash uint32, val Value) {
@@ -384,11 +423,8 @@ func (c container) setValue(key string, keyHash uint32, val Value) {
 }
 
 func (c container) setContainer(key string, keyHash uint32, typ uint8) container {
-	return container{
-		b:   c.b,
-		typ: typ,
-		off: c.set(key, keyHash, typ, make([]byte, nodeSize-1)),
-	}
+	off := c.set(key, keyHash, typ, make([]byte, nodeSize-1))
+	return container{c.node.b.treeNode(off)}
 }
 
 func (c container) setObject(key string, keyHash uint32) Object {
@@ -404,7 +440,7 @@ type Object struct {
 	c container
 }
 
-// NumFields returns the number of fields in the object.
+// NumFields returns the number of fields in the Object.
 func (o Object) NumFields() int { return o.c.count() }
 
 // Get retrieves the value associated with the given key. If the key does not
@@ -478,38 +514,6 @@ type Value struct {
 	num  uint64
 	str  []byte
 	c    container
-}
-
-func (kv keyVal) toValue(b *Buffer) Value {
-	if kv.typ == nil || *kv.typ == TypeInvalid {
-		return Value{Type: TypeInvalid}
-	}
-	switch *kv.typ {
-	case TypeNull:
-		return Value{Type: TypeNull}
-	case TypeBool:
-		return Value{
-			Type: TypeBool,
-			num:  uint64(kv.val[0]),
-		}
-	case TypeInt, TypeFloat:
-		return Value{
-			Type: *kv.typ,
-			num:  binary.LittleEndian.Uint64(kv.val),
-		}
-	case TypeString, TypeBytes:
-		return Value{
-			Type: *kv.typ,
-			str:  kv.val,
-		}
-	case TypeObject, TypeArray:
-		return Value{
-			Type: *kv.typ,
-			c:    container{b: b, typ: *kv.typ, off: kv.typOff},
-		}
-	default:
-		panic("unhandled type")
-	}
 }
 
 // Any returns the Value as an empty interface, panicking if the value's type is
@@ -618,28 +622,27 @@ func Bytes(b []byte) Value { return Value{Type: TypeBytes, str: b} }
 func String(s string) Value { return Value{Type: TypeString, str: unsafeSlice(s)} }
 
 type liter struct {
-	b         *Buffer
 	gen       uint32
-	nodeOffs  [10]uint32
+	nodes     [10]treeNode
 	depth     uint8
 	nodeIndex [10]uint8
 	err       error
 }
 
-func newLiter(b *Buffer, node treeNode) *liter {
+func newLiter(root treeNode) *liter {
 	it := &liter{
-		b:   b,
-		gen: node.gen,
+		gen: root.getGen(),
 	}
-	it.nodeOffs[0] = node.off
+	it.nodes[0] = root
 
+	node := root
 	for node.hasChildren() {
-		node = b.treeNode(node.childOff[0])
-		if it.depth++; it.depth == uint8(len(it.nodeOffs)) {
+		node = node.child(0)
+		if it.depth++; it.depth == uint8(len(it.nodes)) {
 			it.err = errors.New("max depth exceeded")
 			return nil
 		}
-		it.nodeOffs[it.depth] = node.off
+		it.nodes[it.depth] = node
 		it.nodeIndex[it.depth] = 0
 	}
 	return it
@@ -648,35 +651,35 @@ func newLiter(b *Buffer, node treeNode) *liter {
 func (it *liter) next(key *string, index *int, value *Value) bool {
 	if it.err != nil {
 		return false
-	} else if it.gen != it.b.treeNode(it.nodeOffs[0]).gen {
+	} else if it.gen != it.nodes[0].getGen() {
 		return false
 	}
-	node := it.b.treeNode(it.nodeOffs[it.depth])
-	if !(node.typ == TypeObject || node.typ == TypeArray) {
+	node := it.nodes[it.depth]
+	if !(node.getType() == TypeObject || node.getType() == TypeArray) {
 		it.err = errors.New("not an array or object type")
 		return false
-	} else if it.depth == 0 && it.nodeIndex[it.depth] == node.keyCount {
+	} else if it.depth == 0 && it.nodeIndex[it.depth] == node.keyCount() {
 		return false
 	}
 
-	kv := it.b.readKV(node.kvOff[it.nodeIndex[it.depth]], node.typ == TypeObject)
-	*key = unsafeString(kv.key)
-	*index = int(node.hashes[it.nodeIndex[it.depth]])
-	*value = kv.toValue(it.b)
+	kvKey, kvVal := node.kv(it.nodeIndex[it.depth])
+	*key = unsafeString(kvKey)
+	*index = int(node.ptr().hashes[it.nodeIndex[it.depth]])
+	*value = kvVal.toValue()
 
 	it.nodeIndex[it.depth]++
 	for node.hasChildren() {
-		node = it.b.treeNode(node.childOff[it.nodeIndex[it.depth]])
-		if it.depth++; it.depth == uint8(len(it.nodeOffs)) {
+		node = node.child(it.nodeIndex[it.depth])
+		if it.depth++; it.depth == uint8(len(it.nodes)) {
 			it.err = errors.New("max depth exceeded")
 			return false
 		}
-		it.nodeOffs[it.depth] = node.off
+		it.nodes[it.depth] = node
 		it.nodeIndex[it.depth] = 0
 	}
-	for it.depth > 0 && it.nodeIndex[it.depth] == node.keyCount {
+	for it.depth > 0 && it.nodeIndex[it.depth] == node.keyCount() {
 		it.depth--
-		node = it.b.treeNode(it.nodeOffs[it.depth])
+		node = it.nodes[it.depth]
 	}
 	return true
 }
@@ -705,7 +708,7 @@ func (v Value) appendJSON(buf *bytes.Buffer) {
 }
 
 func (c container) appendJSON(buf *bytes.Buffer) {
-	if c.typ == TypeArray {
+	if c.node.getType() == TypeArray {
 		buf.WriteByte('[')
 	} else {
 		buf.WriteByte('{')
@@ -728,7 +731,7 @@ func (c container) appendJSON(buf *bytes.Buffer) {
 		}
 		value.appendJSON(buf)
 	}
-	if c.typ == TypeArray {
+	if c.node.getType() == TypeArray {
 		buf.WriteByte(']')
 	} else {
 		buf.WriteByte('}')
@@ -747,7 +750,7 @@ func (c container) unmarshalJSON(dec *json.Decoder) error {
 		}
 		key := ""
 		hash := i
-		if c.typ == TypeObject {
+		if c.node.getType() == TypeObject {
 			key = t.(string)
 			hash = keyHash(key)
 			t, err = dec.Token()
@@ -797,26 +800,20 @@ func (c container) unmarshalJSON(dec *json.Decoder) error {
 
 func (b *Buffer) setRootContainer(typ uint8) container {
 	b.buf = b.buf[:0]
-	b.grow(nodeSize)
-	clear(b.buf)
-	n := treeNode{off: 0, typ: typ, cNode: (*cNode)(unsafe.Pointer(&b.buf[0]))}
-	b.flushNode(&n)
-	return container{
-		b:   b,
-		typ: typ,
-		off: 0,
-	}
+	root := b.allocNode()
+	root.setType(typ)
+	return container{root}
 }
 
 func (b *Buffer) rootContainer() container {
-	return container{b: b, typ: b.buf[0], off: 0}
+	return container{b.treeNode(0)}
 }
 
 // Root returns the root container of the Buffer, which will be either an Object
 // or an Array. If the Buffer is empty or has an invalid root, Root returns nil.
 func (b *Buffer) Root() any {
 	c := b.rootContainer()
-	switch c.typ {
+	switch c.node.getType() {
 	case TypeObject:
 		return Object{c}
 	case TypeArray:

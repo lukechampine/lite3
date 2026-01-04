@@ -210,8 +210,8 @@ func TestOverwriteContainerUnaligned(t *testing.T) {
 
 	o.Set(Key("k"), Bytes(make([]byte, nodeSize-1)))
 	obj := o.SetObject(Key("k"))
-	if obj.c.off%4 == 0 {
-		t.Fatalf("container offset = %d; want unaligned (mod 4 != 0)", obj.c.off)
+	if obj.c.node.off%4 == 0 {
+		t.Fatalf("container offset = %d; want unaligned (mod 4 != 0)", obj.c.node.off)
 	}
 }
 
