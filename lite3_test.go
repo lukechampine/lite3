@@ -352,84 +352,130 @@ func TestIterMultiLevel(t *testing.T) {
 }
 
 func BenchmarkJohnDoe(b *testing.B) {
-	b.Run("Lite3", func(b *testing.B) {
+	keyUserID := Key("user_id")
+	keyUsername := Key("username")
+	keyEmailAddress := Key("email_address")
+	keyIsActive := Key("is_active")
+	keyAccountBalance := Key("account_balance")
+	keySignupDateStr := Key("signup_date_str")
+	keyLastLoginDate := Key("last_login_date_iso")
+	keyBirthYear := Key("birth_year")
+	keyPhoneNumber := Key("phone_number")
+	keyPreferredLanguage := Key("preferred_language")
+	keyTimeZone := Key("time_zone")
+	keyLoyaltyPoints := Key("loyalty_points")
+	keyAvgSessionLengthMinutes := Key("avg_session_length_minutes")
+	keyNewsletterSubscribed := Key("newsletter_subscribed")
+	keyIPAddress := Key("ip_address")
+	keyNotes := Key("notes")
+
+	b.Run("Lite3Set", func(b *testing.B) {
 		buf := New(make([]byte, 0, 2048))
 		for b.Loop() {
 			o := buf.SetRootObject()
 
-			o.Set(Key("user_id"), Int(12345))
-			o.Set(Key("username"), String("jdoe"))
-			o.Set(Key("email_address"), String("jdoe@example.com"))
-			o.Set(Key("is_active"), Bool(true))
-			o.Set(Key("account_balance"), Float64(259.75))
-			o.Set(Key("signup_date_str"), String("2023-08-15"))
-			o.Set(Key("last_login_date_iso"), String("2025-09-13T13:20:00Z"))
-			o.Set(Key("birth_year"), Int(1996))
-			o.Set(Key("phone_number"), String("+14155555671"))
-			o.Set(Key("preferred_language"), String("en"))
-			o.Set(Key("time_zone"), String("Europe/Berlin"))
-			o.Set(Key("loyalty_points"), Int(845))
-			o.Set(Key("avg_session_length_minutes"), Float64(14.3))
-			o.Set(Key("newsletter_subscribed"), Bool(false))
-			o.Set(Key("ip_address"), String("192.168.0.42"))
-			o.Set(Key("notes"), Null())
-
-			_ = o.Get(Key("user_id")).Int()
-			_ = o.Get(Key("username")).RawString()
-			_ = o.Get(Key("email_address")).RawString()
-			_ = o.Get(Key("is_active")).Bool()
-			_ = o.Get(Key("account_balance")).Float64()
-			_ = o.Get(Key("signup_date_str")).RawString()
-			_ = o.Get(Key("last_login_date_iso")).RawString()
-			_ = o.Get(Key("birth_year")).Int()
-			_ = o.Get(Key("phone_number")).RawString()
-			_ = o.Get(Key("preferred_language")).RawString()
-			_ = o.Get(Key("time_zone")).RawString()
-			_ = o.Get(Key("loyalty_points")).Int()
-			_ = o.Get(Key("avg_session_length_minutes")).Float64()
-			_ = o.Get(Key("newsletter_subscribed")).Bool()
-			_ = o.Get(Key("ip_address")).RawString()
+			o.Set(keyUserID, Int(12345))
+			o.Set(keyUsername, String("jdoe"))
+			o.Set(keyEmailAddress, String("jdoe@example.com"))
+			o.Set(keyIsActive, Bool(true))
+			o.Set(keyAccountBalance, Float64(259.75))
+			o.Set(keySignupDateStr, String("2023-08-15"))
+			o.Set(keyLastLoginDate, String("2025-09-13T13:20:00Z"))
+			o.Set(keyBirthYear, Int(1996))
+			o.Set(keyPhoneNumber, String("+14155555671"))
+			o.Set(keyPreferredLanguage, String("en"))
+			o.Set(keyTimeZone, String("Europe/Berlin"))
+			o.Set(keyLoyaltyPoints, Int(845))
+			o.Set(keyAvgSessionLengthMinutes, Float64(14.3))
+			o.Set(keyNewsletterSubscribed, Bool(false))
+			o.Set(keyIPAddress, String("192.168.0.42"))
+			o.Set(keyNotes, Null())
 		}
 	})
-	b.Run("JSON", func(b *testing.B) {
-		var johnDoe = struct {
-			UserID                  int     `json:"user_id"`
-			Username                string  `json:"username"`
-			EmailAddress            string  `json:"email_address"`
-			IsActive                bool    `json:"is_active"`
-			AccountBalance          float64 `json:"account_balance"`
-			SignupDateStr           string  `json:"signup_date_str"`
-			LastLoginDateISO        string  `json:"last_login_date_iso"`
-			BirthYear               int     `json:"birth_year"`
-			PhoneNumber             string  `json:"phone_number"`
-			PreferredLanguage       string  `json:"preferred_language"`
-			TimeZone                string  `json:"time_zone"`
-			LoyaltyPoints           int     `json:"loyalty_points"`
-			AvgSessionLengthMinutes float64 `json:"avg_session_length_minutes"`
-			NewsletterSubscribed    bool    `json:"newsletter_subscribed"`
-			IPAddress               string  `json:"ip_address"`
-			Notes                   *string `json:"notes"`
-		}{
-			UserID:                  12345,
-			Username:                "jdoe",
-			EmailAddress:            "jdoe@example.com",
-			IsActive:                true,
-			AccountBalance:          259.75,
-			SignupDateStr:           "2023-08-15",
-			LastLoginDateISO:        "2025-09-13T13:20:00Z",
-			BirthYear:               1996,
-			PhoneNumber:             "+14155555671",
-			PreferredLanguage:       "en",
-			TimeZone:                "Europe/Berlin",
-			LoyaltyPoints:           845,
-			AvgSessionLengthMinutes: 14.3,
-			NewsletterSubscribed:    false,
-			IPAddress:               "192.168.0.42",
-			Notes:                   nil,
-		}
+	b.Run("Lite3Get", func(b *testing.B) {
+		buf := New(make([]byte, 0, 2048))
+		o := buf.SetRootObject()
+		o.Set(keyUserID, Int(12345))
+		o.Set(keyUsername, String("jdoe"))
+		o.Set(keyEmailAddress, String("jdoe@example.com"))
+		o.Set(keyIsActive, Bool(true))
+		o.Set(keyAccountBalance, Float64(259.75))
+		o.Set(keySignupDateStr, String("2023-08-15"))
+		o.Set(keyLastLoginDate, String("2025-09-13T13:20:00Z"))
+		o.Set(keyBirthYear, Int(1996))
+		o.Set(keyPhoneNumber, String("+14155555671"))
+		o.Set(keyPreferredLanguage, String("en"))
+		o.Set(keyTimeZone, String("Europe/Berlin"))
+		o.Set(keyLoyaltyPoints, Int(845))
+		o.Set(keyAvgSessionLengthMinutes, Float64(14.3))
+		o.Set(keyNewsletterSubscribed, Bool(false))
+		o.Set(keyIPAddress, String("192.168.0.42"))
+		o.Set(keyNotes, Null())
+
 		for b.Loop() {
-			js, _ := json.Marshal(johnDoe)
-			json.Unmarshal(js, &johnDoe)
+			_ = o.Get(keyUserID).Int()
+			_ = o.Get(keyUsername).RawString()
+			_ = o.Get(keyEmailAddress).RawString()
+			_ = o.Get(keyIsActive).Bool()
+			_ = o.Get(keyAccountBalance).Float64()
+			_ = o.Get(keySignupDateStr).RawString()
+			_ = o.Get(keyLastLoginDate).RawString()
+			_ = o.Get(keyBirthYear).Int()
+			_ = o.Get(keyPhoneNumber).RawString()
+			_ = o.Get(keyPreferredLanguage).RawString()
+			_ = o.Get(keyTimeZone).RawString()
+			_ = o.Get(keyLoyaltyPoints).Int()
+			_ = o.Get(keyAvgSessionLengthMinutes).Float64()
+			_ = o.Get(keyNewsletterSubscribed).Bool()
+			_ = o.Get(keyIPAddress).RawString()
+		}
+	})
+
+	var johnDoe = struct {
+		UserID                  int     `json:"user_id"`
+		Username                string  `json:"username"`
+		EmailAddress            string  `json:"email_address"`
+		IsActive                bool    `json:"is_active"`
+		AccountBalance          float64 `json:"account_balance"`
+		SignupDateStr           string  `json:"signup_date_str"`
+		LastLoginDateISO        string  `json:"last_login_date_iso"`
+		BirthYear               int     `json:"birth_year"`
+		PhoneNumber             string  `json:"phone_number"`
+		PreferredLanguage       string  `json:"preferred_language"`
+		TimeZone                string  `json:"time_zone"`
+		LoyaltyPoints           int     `json:"loyalty_points"`
+		AvgSessionLengthMinutes float64 `json:"avg_session_length_minutes"`
+		NewsletterSubscribed    bool    `json:"newsletter_subscribed"`
+		IPAddress               string  `json:"ip_address"`
+		Notes                   *string `json:"notes"`
+	}{
+		UserID:                  12345,
+		Username:                "jdoe",
+		EmailAddress:            "jdoe@example.com",
+		IsActive:                true,
+		AccountBalance:          259.75,
+		SignupDateStr:           "2023-08-15",
+		LastLoginDateISO:        "2025-09-13T13:20:00Z",
+		BirthYear:               1996,
+		PhoneNumber:             "+14155555671",
+		PreferredLanguage:       "en",
+		TimeZone:                "Europe/Berlin",
+		LoyaltyPoints:           845,
+		AvgSessionLengthMinutes: 14.3,
+		NewsletterSubscribed:    false,
+		IPAddress:               "192.168.0.42",
+		Notes:                   nil,
+	}
+
+	b.Run("JSONSet", func(b *testing.B) {
+		for b.Loop() {
+			_, _ = json.Marshal(johnDoe)
+		}
+	})
+	b.Run("JSONGet", func(b *testing.B) {
+		js, _ := json.Marshal(johnDoe)
+		for b.Loop() {
+			_ = json.Unmarshal(js, &johnDoe)
 		}
 	})
 }

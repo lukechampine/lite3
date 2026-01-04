@@ -58,5 +58,5 @@ func main() {
 
 ## Performance
 
-~2x slower than json.Marshal when encoding, but ~3x faster when decoding.
-Individual `Get`/`Set` operations are ~20ns.
+~10% slower than json.Marshal when encoding, but ~7x faster when decoding.
+Individual `Get`/`Set` operations are ~15ns.
