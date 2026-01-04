@@ -102,10 +102,10 @@ type treeNode struct {
 	*cNode
 }
 
-func (b *Buffer) allocNode() (offset uint32) {
+func (b *Buffer) allocNode() treeNode {
 	b.grow(((len(b.buf) + 3) & ^3) - len(b.buf))
 	b.grow(nodeSize)
-	return uint32(len(b.buf) - nodeSize)
+	return b.treeNode(uint32(len(b.buf) - nodeSize))
 }
 
 func (b *Buffer) treeNode(off uint32) treeNode {
@@ -123,6 +123,7 @@ func (b *Buffer) treeNode(off uint32) treeNode {
 func (b *Buffer) flushNode(node *treeNode) {
 	node.cNode.typeGen = uint32(node.typ) | (node.gen << 8)
 	node.cNode.kcSize = uint32(node.keyCount) | (node.size << 6)
+	// Guard against Buffer reallocs invalidating our pointer
 	if node.cNode != (*cNode)(unsafe.Pointer(&b.buf[node.off])) {
 		*(*cNode)(unsafe.Pointer(&b.buf[node.off])) = *node.cNode
 		node.cNode = (*cNode)(unsafe.Pointer(&b.buf[node.off]))
@@ -269,12 +270,9 @@ func (b *Buffer) splitChild(node *treeNode, i uint8) {
 	node.insertKV(i, child.hashes[med], child.kvOff[med])
 
 	// Move lower half of entries into new sibling
-	sibling := treeNode{
-		off:      b.allocNode(),
-		typ:      node.typ,
-		keyCount: med,
-		cNode:    (*cNode)(unsafe.Pointer(&b.buf[len(b.buf)-nodeSize])),
-	}
+	sibling := b.allocNode()
+	sibling.typ = node.typ
+	sibling.keyCount = med
 	copy(sibling.hashes[:med], child.hashes[med+1:])
 	copy(sibling.kvOff[:med], child.kvOff[med+1:])
 	copy(sibling.childOff[:med], child.childOff[med+1:])
@@ -300,21 +298,15 @@ func (c container) set(key string, keyHash uint32, valType uint8, val []byte) ui
 	// Special case: root is full, and we don't have a parent to split into;
 	// create a new parent to point to the current root.
 	if root.isFull() {
-		parent := treeNode{
-			off:   root.off,
-			typ:   root.typ,
-			gen:   root.gen,
-			size:  root.size,
-			cNode: (*cNode)(unsafe.Pointer(&c.b.buf[root.off])),
-		}
-		root.off = c.b.allocNode()
-		c.b.flushNode(&root)
-		clear(parent.hashes[:])
-		clear(parent.kvOff[:])
-		clear(parent.childOff[:])
-		parent.insertChild(0, root.off)
-		c.b.splitChild(&parent, 0)
-		root = parent
+		movedRoot := c.b.allocNode()
+		copy(c.b.buf[movedRoot.off:], c.b.buf[root.off:])
+		// root becomes parent
+		root.keyCount = 0
+		clear(root.hashes[:])
+		clear(root.kvOff[:])
+		clear(root.childOff[:])
+		root.insertChild(0, movedRoot.off)
+		c.b.splitChild(&root, 0)
 	}
 
 	try := func(h uint32) (uint32, bool) {
