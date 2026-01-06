@@ -857,8 +857,169 @@ func (b *Buffer) UnmarshalJSON(data []byte) error {
 	}
 }
 
-// New creates a new Buffer backed by the given byte slice. If the Buffer later
+// New creates an empty Buffer backed by the given byte slice. If the Buffer later
 // grows beyond the capacity of buf, a new underlying slice will be allocated.
 func New(buf []byte) *Buffer {
-	return &Buffer{buf: buf}
+	return &Buffer{buf: buf[:0]}
+}
+
+func (b *Buffer) validate() error {
+	if len(b.buf) < nodeSize {
+		return errors.New("missing root node")
+	}
+
+	root := b.treeNode(0)
+	rootType := root.getType()
+	if rootType != TypeObject && rootType != TypeArray {
+		return fmt.Errorf("invalid root type: %d", rootType)
+	}
+
+	visited := make(map[uint32]bool)
+	var totalKeys uint32
+	var validateNode func(node treeNode, depth int) error
+	validateNode = func(node treeNode, depth int) error {
+		if depth > 10 {
+			return errors.New("tree depth exceeds maximum")
+		} else if node.off%4 != 0 {
+			return fmt.Errorf("unaligned node offset: %d", node.off)
+		} else if int(node.off)+nodeSize > len(b.buf) {
+			return fmt.Errorf("node offset %d exceeds buffer length %d", node.off, len(b.buf))
+		} else if visited[node.off] {
+			return fmt.Errorf("cycle detected at node offset %d", node.off)
+		}
+		visited[node.off] = true
+
+		nodeType := node.getType()
+		if nodeType != TypeObject && nodeType != TypeArray {
+			return fmt.Errorf("invalid node type %d at offset %d", nodeType, node.off)
+		}
+
+		kc := node.keyCount()
+		if kc > 7 {
+			return fmt.Errorf("invalid key count %d at offset %d", kc, node.off)
+		}
+		totalKeys += uint32(kc)
+
+		p := node.ptr()
+
+		// validate hashes are sorted
+		if !slices.IsSorted(p.hashes[:kc]) {
+			return fmt.Errorf("hashes not sorted at node %d", node.off)
+		}
+
+		// validate key-value offsets and their contents
+		for i := range kc {
+			kvOff := p.kvOff[i]
+			if int(kvOff) >= len(b.buf) {
+				return fmt.Errorf("kv offset %d exceeds buffer length at node %d, slot %d", kvOff, node.off, i)
+			}
+
+			// validate key
+			valOff := kvOff
+			if nodeType == TypeObject {
+				if int(kvOff)+1 > len(b.buf) {
+					return fmt.Errorf("key tag truncated at offset %d", kvOff)
+				}
+				tagSize := uint32(b.buf[kvOff]&3) + 1
+				if int(kvOff)+int(tagSize) > len(b.buf) {
+					return fmt.Errorf("key tag extends beyond buffer at offset %d", kvOff)
+				}
+				var keyTag uint32
+				switch tagSize {
+				case 1:
+					keyTag = uint32(b.buf[kvOff])
+				case 2:
+					keyTag = uint32(binary.LittleEndian.Uint16(b.buf[kvOff:]))
+				case 3:
+					keyTag = uint32(b.buf[kvOff]) | uint32(b.buf[kvOff+1])<<8 | uint32(b.buf[kvOff+2])<<16
+				default:
+					return fmt.Errorf("invalid key tag size %d at offset %d", tagSize, kvOff)
+				}
+				keySize := keyTag >> 2
+				if keySize == 0 {
+					return fmt.Errorf("zero key size at offset %d", kvOff)
+				}
+				if int(kvOff)+int(tagSize)+int(keySize) > len(b.buf) {
+					return fmt.Errorf("key extends beyond buffer at offset %d (size %d)", kvOff, keySize)
+				}
+				valOff = kvOff + tagSize + keySize
+			}
+
+			// validate value
+			if int(valOff) >= len(b.buf) {
+				return fmt.Errorf("value offset %d exceeds buffer length", valOff)
+			}
+			valType := b.buf[valOff]
+			if valType >= TypeInvalid {
+				return fmt.Errorf("invalid value type %d at offset %d", valType, valOff)
+			}
+
+			valSize := typeSizes[valType]
+			if valType == TypeString || valType == TypeBytes {
+				if int(valOff)+5 > len(b.buf) {
+					return fmt.Errorf("string/bytes length field truncated at offset %d", valOff)
+				}
+				strLen := binary.LittleEndian.Uint32(b.buf[valOff+1:])
+				if strLen == 0 {
+					return fmt.Errorf("string/bytes length is zero at offset %d (minimum is 1 for null terminator)", valOff)
+				} else if strLen > uint32(len(b.buf)) {
+					return fmt.Errorf("string/bytes length %d exceeds buffer size at offset %d", strLen, valOff)
+				}
+				valSize += int(strLen)
+			}
+			if int(valOff)+1+valSize > len(b.buf) {
+				return fmt.Errorf("value extends beyond buffer at offset %d", valOff)
+			}
+
+			// recurse
+			if valType == TypeObject || valType == TypeArray {
+				if valOff%4 != 0 {
+					return fmt.Errorf("unaligned container value at offset %d", valOff)
+				}
+				nestedNode := b.treeNode(valOff)
+				if err := validateNode(nestedNode, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+
+		// validate child offsets
+		if node.hasChildren() {
+			for i := uint8(0); i <= kc; i++ {
+				childOff := p.childOff[i]
+				if childOff == 0 {
+					return fmt.Errorf("missing child at index %d in node %d", i, node.off)
+				} else if childOff%4 != 0 {
+					return fmt.Errorf("unaligned child offset %d at node %d, index %d", childOff, node.off, i)
+				} else if int(childOff)+nodeSize > len(b.buf) {
+					return fmt.Errorf("child offset %d exceeds buffer length", childOff)
+				}
+				child := b.treeNode(childOff)
+				// B-tree invariant: non-root nodes with children must have at least 1 key
+				// Also, leaf nodes must have at least 1 key (otherwise iterator fails)
+				if child.keyCount() == 0 {
+					return fmt.Errorf("child at offset %d has no keys", childOff)
+				}
+				if err := validateNode(child, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
+	}
+
+	if err := validateNode(root, 0); err != nil {
+		return err
+	} else if root.size() != totalKeys {
+		return fmt.Errorf("root size %d does not match actual key count %d", root.size(), totalKeys)
+	}
+	return nil
+}
+
+// Open validates buf and initializes a Buffer with it. The Buffer will alias
+// buf, so callers should call slices.Clone first if buf must not be modified.
+func Open(buf []byte) (*Buffer, error) {
+	b := &Buffer{buf: buf}
+	return b, b.validate()
 }

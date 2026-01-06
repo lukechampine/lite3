@@ -73,6 +73,36 @@ func TestIter(t *testing.T) {
 	}
 }
 
+func TestOpen(t *testing.T) {
+	b := New(nil)
+	o := b.SetRootObject()
+	o.Set(Key("event"), String("lap_complete"))
+	o.Set(Key("lap"), Int(56))
+	o.Set(Key("time_sec"), Float64(88.427))
+
+	b2, err := Open(b.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	o2 := b2.Root().(Object)
+	if lap := o2.Get(Key("lap")).Int(); lap != 56 {
+		t.Errorf("lap = %d; want 56", lap)
+	}
+	if event := o2.Get(Key("event")).String(); event != "lap_complete" {
+		t.Errorf("event = %q; want \"lap_complete\"", event)
+	}
+	if timeSec := o2.Get(Key("time_sec")).Float64(); timeSec != 88.427 {
+		t.Errorf("time_sec = %f; want 88.427", timeSec)
+	}
+
+	// corrupt the buffer
+	buf := b.Bytes()
+	buf[0] = 0
+	if _, err := Open(buf); err == nil {
+		t.Fatal("expected error on corrupted buffer; got nil")
+	}
+}
+
 func TestJSON(t *testing.T) {
 	b := New(nil)
 	o := b.SetRootObject()
